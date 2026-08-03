@@ -1,0 +1,35 @@
+# Image-only deployment (no git clone / no local build).
+# Use: NILO_IMAGE=your/registry/nilo-node:tag docker compose -f deploy/compose.standalone.yml up -d
+
+services:
+  nilo-node:
+    image: ${NILO_IMAGE:?Set NILO_IMAGE to a registry tag, e.g. ghcr.io/org/nilo-node:latest}
+    container_name: nilo-node
+    restart: always
+    network_mode: host
+    privileged: true
+    env_file:
+      - .env
+    volumes:
+      - ${NILO_CONFIG_PATH:-./config/nilo-node.yaml}:/etc/nilo-node/nilo-node.yaml:ro
+      - nilo-data:/data
+      - /dev/bus/usb:/dev/bus/usb
+      - /var/run/dbus:/var/run/dbus
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      - NILO_CONFIG_PATH=/etc/nilo-node/nilo-node.yaml
+      - NILO_BACKEND_API_KEY
+      - NILO_BACKEND_CLIENT_ID
+      - NILO_BACKEND_CLIENT_SECRET
+      - NILO_WIFI_PASSWORD
+      - NILO_LOCAL_API_TOKEN
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  nilo-data:

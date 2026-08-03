@@ -1,0 +1,439 @@
+#!/usr/bin/env bash
+# NILO-Node production deploy helper.
+#
+# Usage:
+#   sudo ./scripts/deploy.sh install              # first-time setup
+#   sudo ./scripts/deploy.sh update               # pull/build + recreate
+#   ./scripts/deploy.sh status                    # health + container state
+#   ./scripts/deploy.sh logs [-f]                 # compose logs
+#   sudo ./scripts/deploy.sh stop                 # stop container
+#   sudo ./scripts/deploy.sh uninstall            # stop (+ optional data wipe)
+#
+# Environment (optional):
+#   NILO_INSTALL_DIR=/opt/nilo-node
+#   NILO_REPO=https://github.com/NeoVisions/NILO-Node.git
+#   NILO_REPO_BRANCH=main
+#   NILO_IMAGE=ghcr.io/org/nilo-node:latest   # skip build, pull from registry
+#   DEPLOY_MODE=auto|git|image                  # default: auto
+#   INSTALL_SYSTEMD=1                         # install systemd unit on install
+#   NONINTERACTIVE=1                            # no prompts (generates secrets)
+#
+# Examples:
+#   sudo NILO_IMAGE=ghcr.io/neovisions/nilo-node:latest ./scripts/deploy.sh install
+#   curl -fsSL .../scripts/deploy.sh | sudo bash -s -- install
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+NILO_INSTALL_DIR="${NILO_INSTALL_DIR:-/opt/nilo-node}"
+NILO_REPO="${NILO_REPO:-https://github.com/NeoVisions/NILO-Node.git}"
+NILO_REPO_BRANCH="${NILO_REPO_BRANCH:-main}"
+NILO_IMAGE="${NILO_IMAGE:-}"
+DEPLOY_MODE="${DEPLOY_MODE:-auto}"
+INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
+API_PORT="${API_PORT:-8080}"
+
+COMPOSE_FILE=""
+COMPOSE_PROJECT="nilo-node"
+DC=(docker compose -p "${COMPOSE_PROJECT}")
+
+log() { printf '[nilo-deploy] %s\n' "$*"; }
+warn() { printf '[nilo-deploy] WARN: %s\n' "$*" >&2; }
+die() { printf '[nilo-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+need_root() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    die "Run as root: sudo $0 $*"
+  fi
+}
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+gen_secret() {
+  if command_exists openssl; then
+    openssl rand -hex 24
+  else
+    tr -dc 'a-f0-9' </dev/urandom | head -c 48
+    echo
+  fi
+}
+
+install_docker() {
+  if command_exists docker; then
+    log "Docker already installed: $(docker --version)"
+    return 0
+  fi
+
+  log "Installing Docker Engine..."
+  if command_exists apt-get; then
+    apt-get update -qq
+    apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+      curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+    fi
+    local codename
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-bookworm}")"
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+      ${codename} stable" >/etc/apt/sources.list.d/docker.list
+    apt-get update -qq
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  else
+    curl -fsSL https://get.docker.com | sh
+  fi
+
+  systemctl enable --now docker
+  log "Docker installed: $(docker --version)"
+}
+
+ensure_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+  die "Docker Compose plugin not found. Install docker-compose-plugin."
+}
+
+detect_deploy_mode() {
+  if [[ "${DEPLOY_MODE}" != "auto" ]]; then
+    echo "${DEPLOY_MODE}"
+    return
+  fi
+  if [[ -n "${NILO_IMAGE}" ]]; then
+    echo "image"
+  else
+    echo "git"
+  fi
+}
+
+sync_install_dir_from_git() {
+  if [[ -d "${NILO_INSTALL_DIR}/.git" ]]; then
+    log "Updating repo at ${NILO_INSTALL_DIR}..."
+    git -C "${NILO_INSTALL_DIR}" fetch --depth 1 origin "${NILO_REPO_BRANCH}"
+    git -C "${NILO_INSTALL_DIR}" checkout "${NILO_REPO_BRANCH}"
+    git -C "${NILO_INSTALL_DIR}" pull --ff-only origin "${NILO_REPO_BRANCH}" || true
+    return
+  fi
+
+  if [[ -f "${SOURCE_REPO_ROOT}/docker-compose.prod.yml" ]] \
+    && [[ "${SOURCE_REPO_ROOT}" != "${NILO_INSTALL_DIR}" ]]; then
+    log "Copying project to ${NILO_INSTALL_DIR}..."
+    mkdir -p "${NILO_INSTALL_DIR}"
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude '.venv' \
+      --exclude '__pycache__' \
+      --exclude 'config/nilo-node.yaml' \
+      --exclude '.env' \
+      "${SOURCE_REPO_ROOT}/" "${NILO_INSTALL_DIR}/"
+    return
+  fi
+
+  log "Cloning ${NILO_REPO} → ${NILO_INSTALL_DIR}..."
+  mkdir -p "$(dirname "${NILO_INSTALL_DIR}")"
+  git clone --depth 1 --branch "${NILO_REPO_BRANCH}" "${NILO_REPO}" "${NILO_INSTALL_DIR}"
+}
+
+prepare_image_only_layout() {
+  mkdir -p "${NILO_INSTALL_DIR}/config"
+  local standalone="${SOURCE_REPO_ROOT}/deploy/compose.standalone.yml"
+  if [[ ! -f "${standalone}" ]] && [[ -f "${NILO_INSTALL_DIR}/deploy/compose.standalone.yml" ]]; then
+    standalone="${NILO_INSTALL_DIR}/deploy/compose.standalone.yml"
+  fi
+  [[ -f "${standalone}" ]] || die "compose.standalone.yml not found"
+  cp "${standalone}" "${NILO_INSTALL_DIR}/docker-compose.prod.yml"
+}
+
+setup_compose_file() {
+  local mode="$1"
+  cd "${NILO_INSTALL_DIR}"
+  if [[ "${mode}" == "image" ]]; then
+    if [[ ! -f docker-compose.prod.yml ]] || ! grep -q 'NILO_IMAGE' docker-compose.prod.yml 2>/dev/null; then
+      prepare_image_only_layout
+    fi
+    COMPOSE_FILE="docker-compose.prod.yml"
+  else
+    [[ -f docker-compose.prod.yml ]] || die "Missing docker-compose.prod.yml in ${NILO_INSTALL_DIR}"
+    COMPOSE_FILE="docker-compose.prod.yml"
+  fi
+  log "Using compose file: ${NILO_INSTALL_DIR}/${COMPOSE_FILE} (mode=${mode})"
+}
+
+ensure_config() {
+  local example="${NILO_INSTALL_DIR}/config/nilo-node.example.yaml"
+  local config="${NILO_INSTALL_DIR}/config/nilo-node.yaml"
+  mkdir -p "${NILO_INSTALL_DIR}/config"
+
+  if [[ ! -f "${config}" ]]; then
+    [[ -f "${example}" ]] || die "Missing ${example}"
+    cp "${example}" "${config}"
+    log "Created ${config} from example — review before production use"
+  else
+    log "Config exists: ${config}"
+  fi
+}
+
+ensure_env() {
+  local env_file="${NILO_INSTALL_DIR}/.env"
+  local example="${NILO_INSTALL_DIR}/deploy/env.example"
+
+  if [[ -f "${env_file}" ]]; then
+    log "Env file exists: ${env_file}"
+    return
+  fi
+
+  if [[ -f "${example}" ]]; then
+    cp "${example}" "${env_file}"
+  else
+    touch "${env_file}"
+  fi
+
+  local token wifi
+  token="$(gen_secret)"
+  wifi="$(gen_secret)"
+
+  if [[ "${NONINTERACTIVE}" == "1" ]]; then
+    sed -i "s/^NILO_LOCAL_API_TOKEN=.*/NILO_LOCAL_API_TOKEN=${token}/" "${env_file}"
+    sed -i "s/^NILO_WIFI_PASSWORD=.*/NILO_WIFI_PASSWORD=${wifi}/" "${env_file}"
+    log "Generated NILO_LOCAL_API_TOKEN and NILO_WIFI_PASSWORD in ${env_file}"
+  else
+    warn "Edit ${env_file} and set at least:"
+    warn "  NILO_LOCAL_API_TOKEN (e.g. ${token})"
+    warn "  NILO_WIFI_PASSWORD   (e.g. ${wifi})"
+    warn "  NILO_BACKEND_*       (when backend is configured)"
+  fi
+}
+
+load_env() {
+  local env_file="${NILO_INSTALL_DIR}/.env"
+  if [[ -f "${env_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${env_file}"
+    set +a
+  fi
+}
+
+compose_up() {
+  local mode="$1"
+  cd "${NILO_INSTALL_DIR}"
+  export NILO_IMAGE="${NILO_IMAGE:-}"
+
+  if [[ "${mode}" == "image" ]]; then
+    [[ -n "${NILO_IMAGE}" ]] || die "NILO_IMAGE is required for image deploy mode"
+    log "Pulling image ${NILO_IMAGE}..."
+    ${DC[@]} -f "${COMPOSE_FILE}" pull
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+  else
+    log "Building image nilo-node:local..."
+    ${DC[@]} -f "${COMPOSE_FILE}" build --pull
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+  fi
+}
+
+compose_update() {
+  local mode="$1"
+  cd "${NILO_INSTALL_DIR}"
+  export NILO_IMAGE="${NILO_IMAGE:-}"
+
+  if [[ "${mode}" == "image" ]]; then
+    [[ -n "${NILO_IMAGE}" ]] || die "NILO_IMAGE is required for image deploy mode"
+    ${DC[@]} -f "${COMPOSE_FILE}" pull
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+  else
+    ${DC[@]} -f "${COMPOSE_FILE}" build --pull
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+  fi
+}
+
+install_systemd_unit() {
+  local unit_src="${NILO_INSTALL_DIR}/deploy/systemd/nilo-node.service"
+  [[ -f "${unit_src}" ]] || { warn "systemd unit not found, skipping"; return; }
+
+  sed "s|/opt/nilo-node|${NILO_INSTALL_DIR}|g" "${unit_src}" >/etc/systemd/system/nilo-node.service
+  systemctl daemon-reload
+  systemctl enable nilo-node.service
+  log "systemd unit installed: nilo-node.service (enable/start with: systemctl start nilo-node)"
+}
+
+wait_healthy() {
+  local retries=30
+  local url="http://127.0.0.1:${API_PORT}/api/v1/health"
+  log "Waiting for health at ${url} ..."
+  for ((i = 1; i <= retries; i++)); do
+    if curl -sf "${url}" >/dev/null 2>&1; then
+      log "Health check OK"
+      curl -sf "${url}"
+      echo
+      return 0
+    fi
+    sleep 2
+  done
+  warn "Health check timed out — check logs: $0 logs"
+  return 1
+}
+
+cmd_install() {
+  need_root install
+  local mode
+  mode="$(detect_deploy_mode)"
+  log "Deploy mode: ${mode}"
+
+  install_docker
+  ensure_compose
+
+  if [[ "${mode}" == "git" ]]; then
+    sync_install_dir_from_git
+  else
+    mkdir -p "${NILO_INSTALL_DIR}/config"
+    if [[ ! -f "${NILO_INSTALL_DIR}/config/nilo-node.example.yaml" ]]; then
+      if [[ -f "${SOURCE_REPO_ROOT}/config/nilo-node.example.yaml" ]]; then
+        cp "${SOURCE_REPO_ROOT}/config/nilo-node.example.yaml" "${NILO_INSTALL_DIR}/config/"
+        cp "${SOURCE_REPO_ROOT}/deploy/env.example" "${NILO_INSTALL_DIR}/deploy/env.example" 2>/dev/null || true
+        mkdir -p "${NILO_INSTALL_DIR}/deploy"
+        cp "${SOURCE_REPO_ROOT}/deploy/compose.standalone.yml" "${NILO_INSTALL_DIR}/deploy/" 2>/dev/null || true
+      else
+        sync_install_dir_from_git
+        mode="git"
+      fi
+    fi
+  fi
+
+  setup_compose_file "${mode}"
+  ensure_config
+  ensure_env
+  load_env
+  compose_up "${mode}"
+
+  if [[ "${INSTALL_SYSTEMD}" == "1" ]]; then
+    install_systemd_unit
+  fi
+
+  wait_healthy || true
+  log "Install complete. Install dir: ${NILO_INSTALL_DIR}"
+  log "API token in: ${NILO_INSTALL_DIR}/.env (NILO_LOCAL_API_TOKEN)"
+  log "Verify: curl -H \"Authorization: Bearer \$TOKEN\" http://127.0.0.1:${API_PORT}/api/v1/node/info"
+}
+
+cmd_update() {
+  need_root update
+  local mode
+  mode="$(detect_deploy_mode)"
+
+  install_docker
+  ensure_compose
+
+  if [[ "${mode}" == "git" ]]; then
+    sync_install_dir_from_git
+  fi
+
+  setup_compose_file "${mode}"
+  load_env
+  compose_update "${mode}"
+  wait_healthy || true
+  log "Update complete."
+}
+
+cmd_status() {
+  local mode
+  mode="$(detect_deploy_mode)"
+  [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR}"
+
+  setup_compose_file "${mode}"
+  cd "${NILO_INSTALL_DIR}"
+  ${DC[@]} -f "${COMPOSE_FILE}" ps || true
+
+  if curl -sf "http://127.0.0.1:${API_PORT}/api/v1/health" 2>/dev/null; then
+    echo
+    log "Health: OK"
+    curl -sf "http://127.0.0.1:${API_PORT}/api/v1/node/info" | python3 -m json.tool 2>/dev/null || true
+  else
+    warn "Health endpoint not reachable on port ${API_PORT}"
+  fi
+}
+
+cmd_logs() {
+  local follow="${1:-}"
+  local mode
+  mode="$(detect_deploy_mode)"
+  [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR}"
+  setup_compose_file "${mode}"
+  cd "${NILO_INSTALL_DIR}"
+  if [[ "${follow}" == "-f" ]]; then
+    ${DC[@]} -f "${COMPOSE_FILE}" logs -f --tail=200
+  else
+    ${DC[@]} -f "${COMPOSE_FILE}" logs --tail=200
+  fi
+}
+
+cmd_stop() {
+  need_root stop
+  local mode
+  mode="$(detect_deploy_mode)"
+  [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR}"
+  setup_compose_file "${mode}"
+  cd "${NILO_INSTALL_DIR}"
+  ${DC[@]} -f "${COMPOSE_FILE}" down
+  log "Stopped."
+}
+
+cmd_uninstall() {
+  need_root uninstall
+  cmd_stop
+
+  if [[ "${NONINTERACTIVE}" == "1" ]]; then
+    REPLY=n
+  else
+    read -r -p "Remove Docker volume nilo-data (ALL recordings)? [y/N] " REPLY
+  fi
+  if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
+    docker volume rm "${COMPOSE_PROJECT}_nilo-data" 2>/dev/null || docker volume rm nilo-data 2>/dev/null || true
+    log "Volume removed."
+  fi
+
+  if [[ "${NONINTERACTIVE}" == "1" ]]; then
+    REPLY=n
+  else
+    read -r -p "Remove install directory ${NILO_INSTALL_DIR}? [y/N] " REPLY
+  fi
+  if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
+    rm -rf "${NILO_INSTALL_DIR}"
+    log "Install directory removed."
+  fi
+
+  if [[ -f /etc/systemd/system/nilo-node.service ]]; then
+    systemctl disable nilo-node.service 2>/dev/null || true
+    rm -f /etc/systemd/system/nilo-node.service
+    systemctl daemon-reload
+  fi
+  log "Uninstall complete."
+}
+
+usage() {
+  sed -n '2,24p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+main() {
+  local cmd="${1:-install}"
+  shift || true
+
+  case "${cmd}" in
+    install) cmd_install ;;
+    update) cmd_update ;;
+    status) cmd_status ;;
+    logs) cmd_logs "${1:-}" ;;
+    stop) cmd_stop ;;
+    uninstall) cmd_uninstall ;;
+    -h|--help|help) usage 0 ;;
+    *)
+      die "Unknown command: ${cmd}. Use: install | update | status | logs | stop | uninstall"
+      ;;
+  esac
+}
+
+main "$@"

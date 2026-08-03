@@ -1,0 +1,148 @@
+node:
+  id: ""
+  name: "nilo-node"
+
+backend:
+  enabled: true
+  base_url: "https://api.nilo.example"
+  api_key: "${NILO_BACKEND_API_KEY}"
+  heartbeat_interval_sec: 30
+  config_poll_interval_sec: 300
+  request_timeout_sec: 15
+  retry:
+    max_attempts: 5
+    backoff_sec: 2
+  auth:
+    mode: "jwt"                       # none | api_key | jwt
+    client_id: "${NILO_BACKEND_CLIENT_ID}"
+    client_secret: "${NILO_BACKEND_CLIENT_SECRET}"
+    token_store_path: "/data/backend/auth_tokens.json"
+    refresh_skew_sec: 60
+    login_grant: "client_credentials" # client_credentials | node_credentials
+  endpoints:
+    login: ""                         # e.g. /api/v1/auth/token
+    refresh: ""                       # e.g. /api/v1/auth/refresh
+    campaign: ""                      # e.g. /api/v1/nodes/{node_id}/campaign
+    heartbeat: ""                     # e.g. /api/v1/nodes/{node_id}/heartbeat
+    manifest: ""                      # e.g. /api/v1/nodes/{node_id}/manifests
+    upload: ""                        # e.g. /api/v1/nodes/{node_id}/upload
+    physiology: ""                    # e.g. /api/v1/cardmed/analyze (Cardmed forward)
+  adapters:
+    heartbeat:
+      enabled: true
+    config:
+      enabled: true
+    manifest:
+      enabled: false
+    upload:
+      enabled: false
+    physiology:
+      enabled: false
+  upload_queue:
+    enabled: true
+    process_interval_sec: 60
+    max_attempts: 10
+
+monitoring:
+  offline_grace_sec: 3600
+  default_chunk_duration_sec: 300
+  schedule_tick_sec: 5
+  dev_campaign: null
+  recover_on_startup: true
+
+sources:
+  rgb:
+    enabled: true
+    plugin: "nilo_node.sources.rgb.source.RgbSource"
+  tof:
+    enabled: true
+    plugin: "nilo_node.sources.tof.source.ToFSource"
+  pose:
+    enabled: true
+    plugin: "nilo_node.sources.pose.source.PoseSource"
+  audio:
+    enabled: true
+    plugin: "nilo_node.sources.audio.source.AudioSource"
+  physiology:
+    enabled: true
+    plugin: "nilo_node.sources.physiology.source.PhysiologySource"
+
+camera:
+  enabled: true
+  device_id: ""
+  auto_connect: true
+  mock_when_unavailable: true
+  rgb_fps: 30
+  tof_fps: 30
+  pose_fps: 15
+  pose_backend: "mediapipe"   # mediapipe | yolo | custom
+  pose_model: "mediapipe"
+  pose_plugin: ""             # dotted path for custom backend class
+  tof_storage_mode: "lossless"  # lossless (ffv1) | compressed (x265 gray16)
+  reconnect_enabled: true
+  reconnect_interval_sec: 15
+  defaults:
+    rgb_enabled: true
+    tof_enabled: true
+    pose_enabled: true
+
+storage:
+  base_path: "/data"
+  recordings_dir: "recordings"
+  max_usage_percent: 85
+  retention_days: 30
+  retention_check_interval_sec: 3600
+  delete_only_if_replicated: false
+
+replication:
+  enabled: false
+  mode: "realtime"
+  daily_at: "02:00"
+  process_interval_sec: 60
+  max_attempts: 5
+  delete_local_after_replicated: false
+  targets:
+    backend:
+      enabled: false
+    nas:
+      enabled: false
+      mount_path: "/mnt/nilo-nas"
+      relative_path: "nilo-node"
+      method: "copy"
+
+wifi:
+  enabled: false
+  ssid_prefix: "nilo-node"
+  password: "${NILO_WIFI_PASSWORD}"
+  interface: "wlan0"
+  channel: 6
+  country_code: "ES"
+  mock_when_unavailable: true
+  ap_ip: "192.168.50.1"
+  dhcp_range_start: "192.168.50.10"
+  dhcp_range_end: "192.168.50.100"
+
+cardmed:
+  max_upload_size_mb: 10
+  allowed_mime_types: ["image/jpeg", "image/png", "image/webp"]
+  forward_to_backend: true
+
+bluetooth:
+  enabled: true
+  adapter: "hci0"
+  mock_when_unavailable: true
+  auto_power_on: true
+  scan_timeout_sec: 10
+  sample_rate: 16000
+  channels: 1
+  format: "flac"
+  default_record_on_connect: true
+
+local_api:
+  host: "0.0.0.0"
+  port: 8080
+  auth_token: "${NILO_LOCAL_API_TOKEN}"
+
+logging:
+  level: "INFO"
+  format: "json"

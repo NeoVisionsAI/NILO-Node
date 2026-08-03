@@ -1,0 +1,96 @@
+node:
+  id: ""
+  name: "nilo-node-dev"
+
+backend:
+  enabled: false
+  base_url: "https://api.nilo.example"
+  api_key: "${NILO_BACKEND_API_KEY}"
+  heartbeat_interval_sec: 15
+  config_poll_interval_sec: 30
+  request_timeout_sec: 15
+  auth:
+    mode: "none"
+    token_store_path: "/data/backend/auth_tokens.json"
+  endpoints:
+    login: ""
+    refresh: ""
+    campaign: ""
+    heartbeat: ""
+  adapters:
+    heartbeat:
+      enabled: true
+    config:
+      enabled: true
+
+monitoring:
+  offline_grace_sec: 3600
+  default_chunk_duration_sec: 60
+  schedule_tick_sec: 5
+  dev_campaign:
+    campaign_id: "dev-campaign-001"
+    campaign_name: "dev_capture"
+    subject_user_id: null
+    status: "active"
+    chunk_duration_sec: 60
+    timezone: "UTC"
+    schedule:
+      mode: "always"
+    sources:
+      rgb: { enabled: true }
+      tof: { enabled: true }
+      pose: { enabled: true }
+      audio: { enabled: true }
+      physiology: { enabled: true }
+
+sources:
+  rgb:
+    enabled: true
+    plugin: "nilo_node.sources.rgb.source.RgbSource"
+  tof:
+    enabled: true
+    plugin: "nilo_node.sources.tof.source.ToFSource"
+  pose:
+    enabled: true
+    plugin: "nilo_node.sources.pose.source.PoseSource"
+  audio:
+    enabled: true
+    plugin: "nilo_node.sources.audio.source.AudioSource"
+  physiology:
+    enabled: true
+    plugin: "nilo_node.sources.physiology.source.PhysiologySource"
+
+camera:
+  enabled: true
+  auto_connect: true
+  mock_when_unavailable: true
+  defaults:
+    rgb_enabled: true
+    tof_enabled: true
+    pose_enabled: true
+
+storage:
+  base_path: "/data"
+  max_usage_percent: 85
+  retention_days: 30
+
+wifi:
+  enabled: false
+  mock_when_unavailable: true
+
+cardmed:
+  forward_to_backend: false
+
+bluetooth:
+  enabled: true
+  mock_when_unavailable: true
+  default_record_on_connect: true
+
+local_api:
+  host: "0.0.0.0"
+  port: 8080
+  auth_token: "${NILO_LOCAL_API_TOKEN}"
+
+logging:
+  level: "INFO"
+  format: "text"

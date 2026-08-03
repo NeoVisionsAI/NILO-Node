@@ -1,0 +1,195 @@
+"""WiFi access point management (hostapd + dnsmasq) with dev mock mode."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import subprocess
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from nilo_node.config.models import AppConfig, WifiConfig
+
+logger = logging.getLogger(__name__)
+
+
+class WifiApStatus(BaseModel):
+    enabled: bool
+    running: bool = False
+    mock: bool = False
+    ssid: str | None = None
+    interface: str = "wlan0"
+    ap_ip: str = "192.168.50.1"
+    error: str | None = None
+
+
+class WifiApManager:
+    """Starts a local AP for NILO-Cardmed-Dev. Falls back to mock when hardware is unavailable."""
+
+    def __init__(self, config: AppConfig, storage_base: Path, node_id: str) -> None:
+        self._wifi: WifiConfig = config.wifi
+        self._config_dir = storage_base / "wifi"
+        self._node_id = node_id
+        self._hostapd_proc: asyncio.subprocess.Process | None = None
+        self._dnsmasq_proc: asyncio.subprocess.Process | None = None
+        self._mock = False
+        self._error: str | None = None
+        self._started = False
+
+    def ssid_for_node(self) -> str:
+        short_id = self._node_id.replace("-", "")[:8]
+        return f"{self._wifi.ssid_prefix}-{short_id}"
+
+    def get_status(self) -> WifiApStatus:
+        running = self._started and (
+            self._mock
+            or (
+                self._hostapd_proc is not None
+                and self._hostapd_proc.returncode is None
+            )
+        )
+        return WifiApStatus(
+            enabled=self._wifi.enabled,
+            running=running,
+            mock=self._mock,
+            ssid=self.ssid_for_node() if self._wifi.enabled else None,
+            interface=self._wifi.interface,
+            ap_ip=self._wifi.ap_ip,
+            error=self._error,
+        )
+
+    async def start(self) -> None:
+        if not self._wifi.enabled or self._started:
+            return
+
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+        ssid = self.ssid_for_node()
+        self._write_hostapd_config(ssid)
+        self._write_dnsmasq_config()
+
+        if self._wifi.mock_when_unavailable and not self._interface_available():
+            self._mock = True
+            self._started = True
+            logger.info(
+                "WiFi AP mock mode (interface %s unavailable): ssid=%s",
+                self._wifi.interface,
+                ssid,
+            )
+            return
+
+        try:
+            await self._start_processes()
+            self._started = True
+            logger.info("WiFi AP started: ssid=%s interface=%s", ssid, self._wifi.interface)
+        except Exception as exc:
+            self._error = str(exc)
+            if self._wifi.mock_when_unavailable:
+                self._mock = True
+                self._started = True
+                logger.warning("WiFi AP falling back to mock mode: %s", exc)
+            else:
+                logger.error("WiFi AP failed to start: %s", exc)
+                raise
+
+    async def stop(self) -> None:
+        if not self._started:
+            return
+        for proc, name in (
+            (self._dnsmasq_proc, "dnsmasq"),
+            (self._hostapd_proc, "hostapd"),
+        ):
+            if proc is not None and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                logger.debug("Stopped %s", name)
+        self._hostapd_proc = None
+        self._dnsmasq_proc = None
+        self._started = False
+        self._mock = False
+
+    def _interface_available(self) -> bool:
+        return Path(f"/sys/class/net/{self._wifi.interface}").exists()
+
+    def _write_hostapd_config(self, ssid: str) -> None:
+        path = self._config_dir / "hostapd.conf"
+        lines = [
+            f"interface={self._wifi.interface}",
+            "driver=nl80211",
+            f"ssid={ssid}",
+            f"channel={self._wifi.channel}",
+            f"country_code={self._wifi.country_code}",
+            "hw_mode=g",
+            "ieee80211n=1",
+            "wmm_enabled=1",
+        ]
+        if self._wifi.password:
+            lines.extend(
+                [
+                    "wpa=2",
+                    f"wpa_passphrase={self._wifi.password}",
+                    "wpa_key_mgmt=WPA-PSK",
+                    "rsn_pairwise=CCMP",
+                ]
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _write_dnsmasq_config(self) -> None:
+        path = self._config_dir / "dnsmasq.conf"
+        content = f"""interface={self._wifi.interface}
+bind-interfaces
+dhcp-range={self._wifi.dhcp_range_start},{self._wifi.dhcp_range_end},{self._wifi.netmask},12h
+dhcp-option=3,{self._wifi.ap_ip}
+dhcp-option=6,{self._wifi.ap_ip}
+address=/{self.ssid_for_node().lower()}.local/{self._wifi.ap_ip}
+"""
+        path.write_text(content, encoding="utf-8")
+
+    async def _start_processes(self) -> None:
+        hostapd_conf = self._config_dir / "hostapd.conf"
+        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
+
+        if not self._binary_available("hostapd"):
+            raise RuntimeError("hostapd binary not found")
+        if not self._binary_available("dnsmasq"):
+            raise RuntimeError("dnsmasq binary not found")
+
+        self._hostapd_proc = await asyncio.create_subprocess_exec(
+            "hostapd",
+            str(hostapd_conf),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.sleep(0.5)
+        if self._hostapd_proc.returncode is not None:
+            stderr = await self._hostapd_proc.stderr.read() if self._hostapd_proc.stderr else b""
+            raise RuntimeError(stderr.decode() or "hostapd exited immediately")
+
+        self._dnsmasq_proc = await asyncio.create_subprocess_exec(
+            "dnsmasq",
+            "--conf-file",
+            str(dnsmasq_conf),
+            "--keep-in-foreground",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.sleep(0.2)
+        if self._dnsmasq_proc.returncode is not None:
+            stderr = await self._dnsmasq_proc.stderr.read() if self._dnsmasq_proc.stderr else b""
+            raise RuntimeError(stderr.decode() or "dnsmasq exited immediately")
+
+    @staticmethod
+    def _binary_available(name: str) -> bool:
+        try:
+            subprocess.run(
+                ["which", name],
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False

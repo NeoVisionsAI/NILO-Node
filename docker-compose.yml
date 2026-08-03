@@ -1,0 +1,18 @@
+services:
+  nilo-node:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: nilo-node
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/nilo-node.dev.yaml:/etc/nilo-node/nilo-node.yaml:ro
+      - nilo-data:/data
+    environment:
+      - NILO_BACKEND_API_KEY=${NILO_BACKEND_API_KEY:-dev-key}
+      - NILO_LOCAL_API_TOKEN=${NILO_LOCAL_API_TOKEN:-dev-token}
+
+volumes:
+  nilo-data:
