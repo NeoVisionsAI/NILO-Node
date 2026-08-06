@@ -5,15 +5,15 @@
 #
 # Usage:
 #   sudo ./scripts/oak/setup-poe-network.sh
-#   sudo POE_IFACE=enp2s0 POE_HOST_IP=192.168.1.10 ./scripts/oak/setup-poe-network.sh
+#   sudo POE_IFACE=enp2s0 POE_HOST_IP=169.254.1.10 ./scripts/oak/setup-poe-network.sh
 #
 # Ubuntu NetworkManager. The "connection failed" toast is expected before this script.
 
 set -euo pipefail
 
-POE_HOST_IP="${POE_HOST_IP:-192.168.1.10}"
-POE_PREFIX="${POE_PREFIX:-24}"
-POE_CAMERA_IP="${POE_CAMERA_IP:-192.168.1.15}"
+POE_HOST_IP="${POE_HOST_IP:-169.254.1.10}"
+POE_PREFIX="${POE_PREFIX:-16}"
+POE_CAMERA_IP="${POE_CAMERA_IP:-169.254.1.222}"
 POE_IFACE="${POE_IFACE:-}"
 
 log() { printf '[poe-network] %s\n' "$*"; }
@@ -36,7 +36,7 @@ CONN_NAME="nilo-oak-poe"
 
 log "Interface: ${POE_IFACE}"
 log "Host IP:   ${POE_HOST_IP}/${POE_PREFIX}"
-log "Camera IP: ${POE_CAMERA_IP} (Luxonis factory default — verify if needed)"
+log "Camera IP: ${POE_CAMERA_IP} (Luxonis static fallback when no DHCP — see docs/POE_SETUP.md)"
 
 nmcli connection delete "${CONN_NAME}" 2>/dev/null || true
 

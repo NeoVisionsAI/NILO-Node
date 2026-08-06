@@ -33,8 +33,9 @@ def main() -> None:
         print(format_devices_report(devices))
         if not devices:
             print(
-                "\nPoE tip: sudo ./scripts/oak/setup-poe-network.sh\n"
-                "Then: export OAK_DEVICE_IP=192.168.1.15",
+                "\nPoE tip: sudo POE_IFACE=<eth> ./scripts/oak/setup-poe-network.sh\n"
+                "Then: sudo OAK_DEVICE_IP=169.254.1.222 ./scripts/oak/run-in-docker.sh tof\n"
+                "(Luxonis camera IP when no DHCP — see docs/POE_SETUP.md)",
                 file=sys.stderr,
             )
             raise SystemExit(1)

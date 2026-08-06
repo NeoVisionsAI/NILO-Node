@@ -213,7 +213,7 @@ def main() -> None:
     parser.add_argument(
         "--device-ip",
         default=None,
-        help="PoE IP (e.g. 192.168.1.15). Or env OAK_DEVICE_IP",
+        help="PoE IP (e.g. 169.254.1.222). Or env OAK_DEVICE_IP",
     )
     parser.add_argument(
         "--prefer",

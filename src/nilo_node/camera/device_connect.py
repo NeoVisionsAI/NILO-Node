@@ -8,8 +8,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POE_CAMERA_IP = "192.168.1.15"
-DEFAULT_POE_HOST_IP = "192.168.1.10"
+DEFAULT_POE_CAMERA_IP = "169.254.1.222"
+DEFAULT_POE_HOST_IP = "169.254.1.10"
 
 
 def _protocol_name(info: Any) -> str:
@@ -78,7 +78,7 @@ def resolve_device_info(
     available = list_devices()
     if not available:
         raise RuntimeError(
-            "No OAK device found. PoE: set host Ethernet to 192.168.1.10/24 "
+            "No OAK device found. PoE: set host Ethernet to 169.254.1.10/16 "
             f"(camera usually {DEFAULT_POE_CAMERA_IP}). See docs/POE_SETUP.md"
         )
 

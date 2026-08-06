@@ -257,7 +257,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="OAK pose viewer (MediaPipe / YOLO)")
     parser.add_argument("--device-id", default=None)
-    parser.add_argument("--device-ip", default=None, help="PoE IP, e.g. 192.168.1.15")
+    parser.add_argument("--device-ip", default=None, help="PoE IP, e.g. 169.254.1.222")
     parser.add_argument("--prefer", choices=["auto", "usb", "poe"], default=None)
     args = parser.parse_args()
     PoseViewerApp(device_id=args.device_id, device_ip=args.device_ip, prefer=args.prefer).run()

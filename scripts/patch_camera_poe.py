@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 POE_CAMERA = {
-    "device_ip": "192.168.1.15",
+    "device_ip": "169.254.1.222",
     "connection_mode": "poe",
     "mock_when_unavailable": False,
     "auto_connect": True,

@@ -10,7 +10,7 @@ sudo ./scripts/install.sh
 
 # PoE: static IP on Ethernet port to OAK (production)
 sudo ./scripts/oak/setup-poe-network.sh
-ping -c 2 192.168.1.15
+ping -c 2 169.254.1.222
 
 # Allow GUI from container (once per desktop session)
 xhost +local:docker
@@ -39,7 +39,7 @@ chmod +x scripts/oak/run-in-docker.sh
 ./scripts/oak/run-in-docker.sh discover
 
 # 1) ToF viewer — connect, depth colormap, measure mm
-export OAK_DEVICE_IP=192.168.1.15   # if discover is empty
+sudo OAK_DEVICE_IP=169.254.1.222 ./scripts/oak/run-in-docker.sh tof   # if discover is empty
 ./scripts/oak/run-in-docker.sh tof
 
 # 2) Pose viewer — MediaPipe or YOLO
@@ -86,7 +86,7 @@ docker compose -f docker-compose.hardware.yml up -d nilo-node-hw
 |-------|-----|
 | `cannot open display` | Run `xhost +local:docker`, check `echo $DISPLAY` |
 | Wayland session | Try `export DISPLAY=:0` or run from X11 session |
-| No OAK device | PoE: `setup-poe-network.sh`, `ping 192.168.1.15`, `discover`. USB: udev, `lsusb \| grep 03e7` |
+| No OAK device | PoE: `setup-poe-network.sh`, `ping 169.254.1.222`, `discover`. USB: udev, `lsusb \| grep 03e7` |
 | Tk window empty | Wait a few seconds for ToF warmup |
 | Build slow | Normal first time (mediapipe, opencv, depthai) |
 

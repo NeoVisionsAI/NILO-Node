@@ -70,7 +70,7 @@ sources:
 camera:
   enabled: true
   device_id: ""
-  device_ip: "192.168.1.15"        # PoE factory default (Luxonis OAK-D-SR-PoE)
+  device_ip: "169.254.1.222"       # Luxonis PoE static IP when no DHCP on link
   connection_mode: "poe"             # auto | usb | poe — production mini PC uses PoE
   auto_connect: true
   mock_when_unavailable: false       # false = require real OAK on PoE in production
