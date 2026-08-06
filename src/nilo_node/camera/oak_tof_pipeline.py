@@ -65,8 +65,7 @@ class OakSrGraph:
         return bgr
 
 
-def uses_depthai_v2(dai: Any) -> bool:
-    return hasattr(dai.node, "XLinkOut")
+from nilo_node.camera.device_connect import uses_depthai_v2
 
 
 def _tof_socket(dai: Any) -> Any:

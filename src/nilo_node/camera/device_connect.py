@@ -12,6 +12,29 @@ DEFAULT_POE_CAMERA_IP = "169.254.1.222"
 DEFAULT_POE_HOST_IP = "169.254.1.10"
 
 
+def uses_depthai_v2(dai: Any) -> bool:
+    """DepthAI 2.x exposes XLinkOut; v3 removed it."""
+    return hasattr(dai.node, "XLinkOut")
+
+
+def _normalize_ip(ip: str) -> str:
+    return ip.strip().replace("..", ".")
+
+
+def device_info_for_ip(dai: Any, ip: str) -> Any:
+    """Build DeviceInfo for PoE/TCP — v3 accepts IP string only; v2 may need XLinkProtocol."""
+    ip = _normalize_ip(ip)
+    if uses_depthai_v2(dai):
+        xlink = getattr(dai, "XLinkProtocol", None)
+        if xlink is not None and hasattr(xlink, "X_LINK_TCP_IP"):
+            return dai.DeviceInfo(ip, xlink.X_LINK_TCP_IP)
+    return dai.DeviceInfo(ip)
+
+
+def device_info_for_id(dai: Any, device_id: str) -> Any:
+    return dai.DeviceInfo(device_id)
+
+
 def _protocol_name(info: Any) -> str:
     proto = getattr(info, "protocol", "")
     if hasattr(proto, "name"):
@@ -117,11 +140,9 @@ def resolve_device_info(
     device_id = device_id or os.environ.get("OAK_DEVICE_ID", "").strip() or None
 
     if device_ip:
+        device_ip = _normalize_ip(device_ip)
         logger.info("Connecting to OAK by IP (PoE): %s", device_ip)
-        if hasattr(dai, "XLinkProtocol"):
-            info = dai.DeviceInfo(device_ip, dai.XLinkProtocol.X_LINK_TCP_IP)
-        else:
-            info = dai.DeviceInfo(device_ip)
+        info = device_info_for_ip(dai, device_ip)
         meta = {"mxid": device_id or device_ip, "ip": device_ip, "protocol": "TCP", "connection": "poe"}
         return info, meta
 
@@ -170,12 +191,9 @@ def resolve_device_info(
     ip = chosen.get("ip") or ""
 
     if chosen["connection"] == "poe" and ip:
-        if hasattr(dai, "XLinkProtocol"):
-            info = dai.DeviceInfo(ip, dai.XLinkProtocol.X_LINK_TCP_IP)
-        else:
-            info = dai.DeviceInfo(ip)
+        info = device_info_for_ip(dai, ip)
     else:
-        info = dai.DeviceInfo(mxid)
+        info = device_info_for_id(dai, mxid)
 
     logger.info("Selected OAK %s (%s) protocol=%s", mxid[:12], chosen["connection"], chosen["protocol"])
     return info, chosen
