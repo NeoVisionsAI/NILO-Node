@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
+
+from nilo_node.camera.oak_settings import (
+    load_oak_connection_settings,
+    persist_discovered_oak_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,14 +140,21 @@ def resolve_device_info(
     prefer: str = "auto",
 ) -> tuple[Any, dict[str, str]]:
     """Resolve DeviceInfo for USB or PoE. prefer: auto | usb | poe."""
-    device_ip = device_ip or os.environ.get("OAK_DEVICE_IP", "").strip() or None
-    device_id = device_id or os.environ.get("OAK_DEVICE_ID", "").strip() or None
+    settings = load_oak_connection_settings(
+        device_ip=device_ip,
+        device_id=device_id,
+        prefer=prefer,
+    )
+    device_ip = settings.device_ip or None
+    device_id = settings.device_id or None
+    prefer = settings.connection_mode or prefer
 
     if device_ip:
         device_ip = _normalize_ip(device_ip)
         logger.info("Connecting to OAK by IP (PoE): %s", device_ip)
         info = device_info_for_ip(dai, device_ip)
         meta = {"mxid": device_id or device_ip, "ip": device_ip, "protocol": "TCP", "connection": "poe"}
+        persist_discovered_oak_settings(meta)
         return info, meta
 
     available = list_devices()
@@ -196,6 +207,7 @@ def resolve_device_info(
         info = device_info_for_id(dai, mxid)
 
     logger.info("Selected OAK %s (%s) protocol=%s", mxid[:12], chosen["connection"], chosen["protocol"])
+    persist_discovered_oak_settings(chosen)
     return info, chosen
 
 

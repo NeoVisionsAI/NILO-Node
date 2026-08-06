@@ -35,12 +35,18 @@ def apply_poe_camera(config_path: Path) -> None:
 
     if not changed:
         print(f"[patch-config] PoE camera settings already applied: {config_path}")
-        return
+    else:
+        with config_path.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
 
-    with config_path.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(data, fh, sort_keys=False, allow_unicode=True)
+        print(f"[patch-config] Updated {config_path}: camera.{', camera.'.join(changed)}")
 
-    print(f"[patch-config] Updated {config_path}: camera.{', camera.'.join(changed)}")
+    oak_local = config_path.parent / "oak.local.yaml"
+    if not oak_local.is_file() or changed:
+        oak_payload = {"camera": dict(POE_CAMERA)}
+        with oak_local.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(oak_payload, fh, sort_keys=False, allow_unicode=True)
+        print(f"[patch-config] Wrote {oak_local}")
 
 
 def main() -> int:

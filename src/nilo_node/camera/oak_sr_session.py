@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from nilo_node.camera.device_connect import list_devices, resolve_device_info
+from nilo_node.camera.oak_settings import load_oak_connection_settings
 from nilo_node.camera.oak_tof_pipeline import OakSrGraph, depth_to_colormap, open_oak_sr_graph
 
 logger = logging.getLogger(__name__)
@@ -31,10 +31,15 @@ class OakSrSession:
         fps: int = 30,
         prefer: str | None = None,
     ) -> None:
-        self._device_id = device_id
-        self._device_ip = device_ip
+        loaded = load_oak_connection_settings(
+            device_ip=device_ip,
+            device_id=device_id,
+            prefer=prefer,
+        )
+        self._device_id = loaded.device_id or device_id
+        self._device_ip = loaded.device_ip or None
         self._fps = fps
-        self._prefer = prefer or os.environ.get("OAK_CONNECTION", "auto")
+        self._prefer = loaded.connection_mode or "auto"
         self._connection_meta: dict[str, str] = {}
         self._graph: OakSrGraph | None = None
         self._tof_config: Any | None = None

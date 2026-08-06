@@ -1,0 +1,6 @@
+# Copy to config/oak.local.yaml (gitignored) or let setup-poe-network.sh create it.
+# Scripts and test viewers read this automatically — no OAK_DEVICE_IP env var needed.
+camera:
+  device_ip: "169.254.1.222"
+  connection_mode: "poe"
+  device_id: ""

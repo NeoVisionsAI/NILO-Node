@@ -53,7 +53,7 @@ run_oak_test() {
   enable_display
   OAK_DEVICE_IP="${OAK_DEVICE_IP:-}" \
   OAK_DEVICE_ID="${OAK_DEVICE_ID:-}" \
-  OAK_CONNECTION="${OAK_CONNECTION:-poe}" \
+  OAK_CONNECTION="${OAK_CONNECTION:-}" \
     "${COMPOSE[@]}" run --rm oak-test "${script_path}" "$@"
 }
 
@@ -66,7 +66,7 @@ case "${cmd}" in
     ;;
   discover)
     ensure_image
-    OAK_CONNECTION="${OAK_CONNECTION:-poe}" \
+    OAK_CONNECTION="${OAK_CONNECTION:-}" \
       "${COMPOSE[@]}" run --rm oak-test /app/scripts/oak/discover_devices.py "$@"
     ;;
   tof)

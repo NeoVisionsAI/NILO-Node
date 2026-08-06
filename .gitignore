@@ -159,6 +159,7 @@ venv.bak/
 
 # Local config overrides
 config/nilo-node.yaml
+config/oak.local.yaml
 
 # Exported pose models (large binaries)
 scripts/oak/models/

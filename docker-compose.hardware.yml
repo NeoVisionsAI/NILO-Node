@@ -26,14 +26,17 @@ services:
       - /dev/bus/usb:/dev/bus/usb
       - ./scripts/oak:/app/scripts/oak:ro
       - ./src:/app/src:ro
+      - ./config:/app/config:ro
       - ./scripts/oak/models:/app/scripts/oak/models
     environment:
       DISPLAY: ${DISPLAY:-:0}
       QT_X11_NO_MITSHM: "1"
       PYTHONPATH: /app/src:/app/scripts
+      OAK_CONFIG_PATH: /app/config/oak.local.yaml
+      NILO_CONFIG_PATH: /app/config/nilo-node.yaml
       OAK_DEVICE_IP: ${OAK_DEVICE_IP:-}
       OAK_DEVICE_ID: ${OAK_DEVICE_ID:-}
-      OAK_CONNECTION: ${OAK_CONNECTION:-poe}
+      OAK_CONNECTION: ${OAK_CONNECTION:-}
     devices:
       - /dev/dri:/dev/dri
 

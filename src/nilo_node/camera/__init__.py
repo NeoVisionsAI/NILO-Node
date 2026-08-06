@@ -14,6 +14,11 @@ from nilo_node.camera.discovery import depthai_available, discover_devices
 from nilo_node.camera.manager import CameraManager
 from nilo_node.camera.models import CameraConnectionState, CameraDeviceInfo, CameraStatus, CaptureFlags
 from nilo_node.camera.oak_sr_session import OakFrameSet, OakSrSession
+from nilo_node.camera.oak_settings import (
+    OakConnectionSettings,
+    load_oak_connection_settings,
+    save_oak_connection_settings,
+)
 from nilo_node.camera.oak_tof_pipeline import OakSrGraph, depth_to_colormap, open_oak_sr_graph
 
 __all__ = [
@@ -25,6 +30,7 @@ __all__ = [
     "CameraStatus",
     "CaptureFlags",
     "OakFrameSet",
+    "OakConnectionSettings",
     "OakSrGraph",
     "OakSrSession",
     "depth_to_colormap",
@@ -33,8 +39,10 @@ __all__ = [
     "discover_devices",
     "format_devices_report",
     "list_devices",
+    "load_oak_connection_settings",
     "open_oak_sr_graph",
     "resolve_device_info",
+    "save_oak_connection_settings",
     "should_use_depthai_hardware",
     "uses_depthai_v2",
 ]

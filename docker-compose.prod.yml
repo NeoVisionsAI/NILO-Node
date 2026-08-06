@@ -21,8 +21,6 @@ services:
       - /dev/snd:/dev/snd
     environment:
       - NILO_CONFIG_PATH=/etc/nilo-node/nilo-node.yaml
-      - OAK_DEVICE_IP=${OAK_DEVICE_IP:-}
-      - OAK_CONNECTION=${OAK_CONNECTION:-poe}
       - NILO_BACKEND_API_KEY
       - NILO_BACKEND_CLIENT_ID
       - NILO_BACKEND_CLIENT_SECRET

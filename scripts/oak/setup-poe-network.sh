@@ -56,4 +56,18 @@ log "PoE link configured. Test:"
 log "  ping -c 2 ${POE_CAMERA_IP}"
 log "  ./scripts/oak/run-in-docker.sh discover"
 log ""
+log "Saving camera IP to config/oak.local.yaml (read automatically by scripts and NILO-Node)..."
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OAK_LOCAL="${REPO_ROOT}/config/oak.local.yaml"
+mkdir -p "$(dirname "${OAK_LOCAL}")"
+cat > "${OAK_LOCAL}" <<EOF
+# Written by setup-poe-network.sh — local OAK PoE settings (gitignored)
+camera:
+  device_ip: "${POE_CAMERA_IP}"
+  connection_mode: poe
+  device_id: ""
+EOF
+log "  ${OAK_LOCAL}"
+log ""
+log "Then: ./scripts/oak/run-in-docker.sh tof   (no OAK_DEVICE_IP needed)"
 log "Note: This interface has no internet — use WiFi/other NIC for apt/docker hub."
