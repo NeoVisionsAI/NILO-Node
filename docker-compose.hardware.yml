@@ -1,0 +1,70 @@
+# Interactive OAK hardware tests inside Docker (GUI via host X11).
+#
+# Host (once per session):
+#   xhost +local:docker
+#
+# Run:
+#   ./scripts/oak/run-in-docker.sh tof
+#   ./scripts/oak/run-in-docker.sh pose
+#   ./scripts/oak/run-in-docker.sh model prepare --backend mediapipe
+
+services:
+  oak-test:
+    image: nilo-node:hardware
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: hardware
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    entrypoint: ["python"]
+    working_dir: /app
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev/bus/usb:/dev/bus/usb
+      - ./scripts/oak/models:/app/scripts/oak/models
+    environment:
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: "1"
+      PYTHONPATH: /app/scripts
+    devices:
+      - /dev/dri:/dev/dri
+
+  # Optional: run NILO-Node + hardware in one image on the mini PC
+  nilo-node-hw:
+    image: nilo-node:hardware
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: hardware
+    container_name: nilo-node
+    restart: always
+    network_mode: host
+    privileged: true
+    env_file:
+      - .env
+    volumes:
+      - ./config/nilo-node.yaml:/etc/nilo-node/nilo-node.yaml:ro
+      - nilo-data:/data
+      - /dev/bus/usb:/dev/bus/usb
+      - /var/run/dbus:/var/run/dbus
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      NILO_CONFIG_PATH: /etc/nilo-node/nilo-node.yaml
+      NILO_BACKEND_API_KEY: ${NILO_BACKEND_API_KEY:-}
+      NILO_BACKEND_CLIENT_ID: ${NILO_BACKEND_CLIENT_ID:-}
+      NILO_BACKEND_CLIENT_SECRET: ${NILO_BACKEND_CLIENT_SECRET:-}
+      NILO_WIFI_PASSWORD: ${NILO_WIFI_PASSWORD:-}
+      NILO_LOCAL_API_TOKEN: ${NILO_LOCAL_API_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  nilo-data:

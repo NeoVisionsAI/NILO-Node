@@ -31,6 +31,20 @@ camera:
   reconnect_interval_sec: 15
 ```
 
+## OAK ToF hardware tests (Docker)
+
+No host Python venv — everything runs in the **`nilo-node:hardware`** image:
+
+```bash
+xhost +local:docker    # once per desktop session
+./scripts/oak/run-in-docker.sh tof    # ToF GUI
+./scripts/oak/run-in-docker.sh pose   # pose MediaPipe / YOLO
+```
+
+See [`scripts/oak/README.md`](scripts/oak/README.md).
+
+Production deploy (`./scripts/install.sh`) builds the same **hardware** image for the mini PC with OAK.
+
 ## Phase 6 (current)
 
 - **ManifestAdapter** + **UploadAdapter** — sync finalized chunks to NILO-backend

@@ -31,6 +31,13 @@ camera = [
     "mediapipe>=0.10.0",
     "opencv-python-headless>=4.8.0",
 ]
+hardware = [
+    "depthai>=2.24.0",
+    "mediapipe>=0.10.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "ultralytics>=8.3.0",
+]
 
 [project.scripts]
 nilo-node = "nilo_node.main:main"

@@ -1,9 +1,10 @@
 services:
   nilo-node:
-    image: ${NILO_IMAGE:-nilo-node:local}
+    image: ${NILO_IMAGE:-nilo-node:hardware}
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: ${NILO_DOCKER_TARGET:-hardware}
     container_name: nilo-node
     restart: always
     network_mode: host

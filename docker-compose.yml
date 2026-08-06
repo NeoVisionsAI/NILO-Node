@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: runtime
     container_name: nilo-node
     restart: always
     ports:

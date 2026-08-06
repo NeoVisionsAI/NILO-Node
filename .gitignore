@@ -160,6 +160,9 @@ venv.bak/
 # Local config overrides
 config/nilo-node.yaml
 
+# Exported pose models (large binaries)
+scripts/oak/models/
+
 # Spyder project settings
 .spyderproject
 .spyproject
