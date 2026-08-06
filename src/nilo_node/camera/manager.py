@@ -6,6 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+from nilo_node.camera.device_connect import should_use_depthai_hardware
 from nilo_node.camera.discovery import depthai_available, discover_devices
 from nilo_node.camera.models import (
     CameraConnectionState,
@@ -71,26 +72,40 @@ class CameraManager:
     def _build_pipeline_for_connect(self, use_depthai: bool):
         return build_pipeline(use_depthai=use_depthai, camera_cfg=self._camera_cfg)
 
+    def _use_depthai(self, devices: list[CameraDeviceInfo]) -> bool:
+        return should_use_depthai_hardware(
+            depthai_ok=depthai_available(),
+            devices=devices,
+            device_ip=self._camera_cfg.device_ip,
+            connection_mode=self._camera_cfg.connection_mode,
+        )
+
     async def connect(self, device_id: str | None = None) -> CameraStatus:
         async with self._lock:
             self._state = CameraConnectionState.CONNECTING
             self._last_error = None
             try:
                 devices = await self.discover()
-                use_depthai = bool(devices) and depthai_available()
+                use_depthai = self._use_depthai(devices)
                 if use_depthai:
                     self._pipeline = self._build_pipeline_for_connect(True)
                 elif self._camera_cfg.mock_when_unavailable:
                     self._pipeline = self._build_pipeline_for_connect(False)
                 else:
-                    raise RuntimeError("No OAK camera found and mock_when_unavailable=false")
+                    raise RuntimeError(
+                        "No OAK camera found and mock_when_unavailable=false. "
+                        "PoE: set camera.device_ip — see docs/POE_SETUP.md"
+                    )
 
                 target_id = device_id or self._camera_cfg.device_id or None
                 if not use_depthai and target_id is None:
                     target_id = "mock-oak-device"
 
                 await self._pipeline.start(target_id)
-                self._connected_device_id = target_id
+                if use_depthai and hasattr(self._pipeline, "_device_id"):
+                    self._connected_device_id = getattr(self._pipeline, "_device_id", None) or target_id
+                else:
+                    self._connected_device_id = target_id
                 self._state = CameraConnectionState.CONNECTED
                 self._start_watchdog()
             except Exception as exc:
@@ -227,7 +242,8 @@ class CameraManager:
             except Exception:
                 pass
             try:
-                use_depthai = depthai_available() and bool(await self.discover())
+                devices = await self.discover()
+                use_depthai = self._use_depthai(devices)
                 self._pipeline = self._build_pipeline_for_connect(use_depthai)
                 await self._pipeline.start(device_id)
                 self._state = CameraConnectionState.CONNECTED

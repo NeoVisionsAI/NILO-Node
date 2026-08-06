@@ -11,7 +11,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
-from oak.device_connect import format_devices_report, list_devices  # noqa: E402
+from nilo_node.camera.device_connect import format_devices_report, list_devices
 
 
 def main() -> None:

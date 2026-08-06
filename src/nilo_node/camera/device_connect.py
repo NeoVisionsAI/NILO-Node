@@ -208,3 +208,20 @@ def format_devices_report(devices: list[dict[str, str]]) -> str:
             f"{d['mxid'][:14]:<14} {d['connection']:<10} {d['protocol']:<20} {d.get('ip') or '-'}"
         )
     return "\n".join(lines)
+
+
+def should_use_depthai_hardware(
+    *,
+    depthai_ok: bool,
+    devices: list,
+    device_ip: str = "",
+    connection_mode: str = "auto",
+) -> bool:
+    """Use real OAK capture when DepthAI is installed and PoE/IP is configured."""
+    if not depthai_ok:
+        return False
+    if devices:
+        return True
+    if device_ip.strip():
+        return True
+    return connection_mode == "poe"

@@ -208,7 +208,25 @@ sudo NILO_IMAGE=ghcr.io/neovisions/nilo-node:latest ./scripts/deploy.sh install
 | `INSTALL_SYSTEMD` | `0` | Set `1` to register systemd unit |
 | `NONINTERACTIVE` | `0` | Set `1` to auto-generate secrets |
 
-Secrets live in `${NILO_INSTALL_DIR}/.env` (see [`deploy/env.example`](deploy/env.example)). Config: `config/nilo-node.yaml` (created from example on first install).
+Secrets live in `${NILO_INSTALL_DIR}/.env` (see [`deploy/env.example`](deploy/env.example)). Config: `config/nilo-node.yaml` (created from example on first install; PoE camera settings applied by `deploy.sh update`).
+
+### OAK-D-SR-PoE (production camera)
+
+Topology: **OAK → PoE injector → Ethernet mini PC**. Before first capture:
+
+```bash
+sudo POE_IFACE=enp2s0 ./scripts/oak/setup-poe-network.sh
+ping -c 2 169.254.1.222
+sudo ./scripts/deploy.sh update
+```
+
+Production uses the same DepthAI stack as the ToF test viewer (`src/nilo_node/camera/` — PoE IP, DepthAI v2/v3). Full guide: [`docs/POE_SETUP.md`](docs/POE_SETUP.md).
+
+Hardware smoke test (optional):
+
+```bash
+sudo OAK_DEVICE_IP=169.254.1.222 ./scripts/oak/run-in-docker.sh tof
+```
 
 ### Manual steps (alternative)
 
