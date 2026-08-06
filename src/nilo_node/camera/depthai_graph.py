@@ -124,51 +124,15 @@ class DepthAiDeviceSession:
         return FrameBundle(timestamp=ts, rgb=rgb_frame, depth=depth_frame)
 
     def _build_pipeline(self, dai: Any) -> Any:
-        pipeline = dai.Pipeline()
-        self._has_depth = False
+        from nilo_node.camera.oak_tof_pipeline import build_oak_sr_pipeline
 
-        cam_rgb = pipeline.create(dai.node.ColorCamera)
-        cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-        cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-        cam_rgb.setInterleaved(False)
-        cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        cam_rgb.setFps(self._rgb_fps)
-        cam_rgb.setPreviewSize(self._rgb_width, self._rgb_height)
-
-        xout_rgb = pipeline.create(dai.node.XLinkOut)
-        xout_rgb.setStreamName("rgb")
-        cam_rgb.preview.link(xout_rgb.input)
-
-        if hasattr(dai.node, "ToF"):
-            try:
-                tof = pipeline.create(dai.node.ToF)
-                tof.setFps(self._tof_fps)
-                xout_depth = pipeline.create(dai.node.XLinkOut)
-                xout_depth.setStreamName("depth")
-                tof.depth.link(xout_depth.input)
-                self._has_depth = True
-                logger.info("DepthAI pipeline: ToF depth stream enabled")
-            except Exception as exc:
-                logger.warning("ToF node unavailable (%s) — trying mono fallback", exc)
-
-        if not self._has_depth:
-            try:
-                mono = pipeline.create(dai.node.MonoCamera)
-                mono.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
-                mono.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-                mono.setFps(self._tof_fps)
-
-                manip = pipeline.create(dai.node.ImageManip)
-                manip.initialConfig.setResize(self._depth_width, self._depth_height)
-                manip.initialConfig.setFrameType(dai.ImgFrame.Type.RAW16)
-                mono.out.link(manip.input)
-
-                xout_depth = pipeline.create(dai.node.XLinkOut)
-                xout_depth.setStreamName("depth")
-                manip.out.link(xout_depth.input)
-                self._has_depth = True
-                logger.info("DepthAI pipeline: mono depth fallback enabled")
-            except Exception as exc:
-                logger.warning("Depth fallback unavailable: %s — RGB-only capture", exc)
-
+        pipeline, _tof_config = build_oak_sr_pipeline(
+            dai,
+            fps=self._tof_fps,
+            include_rgb=True,
+            rgb_width=self._rgb_width,
+            rgb_height=self._rgb_height,
+        )
+        self._has_depth = True
+        logger.info("DepthAI pipeline: OAK-D-SR ToF + RGB")
         return pipeline

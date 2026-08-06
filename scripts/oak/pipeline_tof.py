@@ -9,7 +9,10 @@ from typing import Any
 
 import numpy as np
 
+from nilo_node.camera.oak_tof_pipeline import build_oak_sr_pipeline, depth_to_colormap
 from oak.device_connect import list_devices, resolve_device_info
+
+__all__ = ["OakFrameSet", "OakSrSession", "build_oak_sr_pipeline", "depth_to_colormap", "list_devices"]
 
 logger = logging.getLogger(__name__)
 
@@ -19,103 +22,6 @@ class OakFrameSet:
     rgb: np.ndarray | None = None
     depth_mm: np.ndarray | None = None
     depth_colormap: np.ndarray | None = None
-
-
-def _configure_tof_node(tof: Any) -> Any:
-    tof_config = tof.initialConfig.get()
-    tof_config.enableOpticalCorrection = True
-    tof_config.enablePhaseShuffleTemporalFilter = True
-    tof_config.phaseUnwrappingLevel = 4
-    tof_config.phaseUnwrapErrorThreshold = 300
-    tof_config.enableTemperatureCorrection = False
-    tof.initialConfig.set(tof_config)
-    return tof_config
-
-
-def build_oak_sr_pipeline(
-    dai: Any,
-    *,
-    fps: int = 30,
-    include_rgb: bool = True,
-) -> tuple[Any, Any | None]:
-    """Build Luxonis-recommended ToF pipeline for OAK-D-SR (CAM_A = ToF sensor)."""
-    pipeline = dai.Pipeline()
-    tof_config: Any | None = None
-
-    if hasattr(dai.node, "ToF") and hasattr(dai.node, "Camera"):
-        tof = pipeline.create(dai.node.ToF)
-        tof_config = _configure_tof_node(tof)
-
-        cam_tof = pipeline.create(dai.node.Camera)
-        cam_tof.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-        cam_tof.setFps(max(fps * 2, 30))
-        if hasattr(cam_tof, "setImageOrientation"):
-            cam_tof.setImageOrientation(dai.CameraImageOrientation.ROTATE_180_DEG)
-        cam_tof.raw.link(tof.input)
-
-        xout_depth = pipeline.create(dai.node.XLinkOut)
-        xout_depth.setStreamName("depth")
-        tof.depth.link(xout_depth.input)
-
-        if include_rgb:
-            cam_rgb = pipeline.create(dai.node.ColorCamera)
-            rgb_socket = _pick_rgb_socket(dai)
-            cam_rgb.setBoardSocket(rgb_socket)
-            _set_rgb_resolution(cam_rgb, dai)
-            cam_rgb.setInterleaved(False)
-            cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-            cam_rgb.setFps(fps)
-            cam_rgb.setPreviewSize(640, 480)
-
-            xout_rgb = pipeline.create(dai.node.XLinkOut)
-            xout_rgb.setStreamName("rgb")
-            cam_rgb.preview.link(xout_rgb.input)
-
-        logger.info("Pipeline: OAK-D-SR ToF (Camera + ToF node)")
-        return pipeline, tof_config
-
-    raise RuntimeError(
-        "DepthAI SDK too old or missing ToF/Camera nodes. "
-        "Install depthai>=2.24 for OAK-D-SR (PoE or USB)."
-    )
-
-
-def _pick_rgb_socket(dai: Any) -> Any:
-    for socket in (
-        getattr(dai.CameraBoardSocket, "CAM_B", None),
-        getattr(dai.CameraBoardSocket, "CAM_C", None),
-    ):
-        if socket is not None:
-            return socket
-    return dai.CameraBoardSocket.CAM_B
-
-
-def _set_rgb_resolution(cam_rgb: Any, dai: Any) -> None:
-    props = dai.ColorCameraProperties.SensorResolution
-    for name in ("THE_800_P", "THE_720_P", "THE_1080_P"):
-        res = getattr(props, name, None)
-        if res is None:
-            continue
-        try:
-            cam_rgb.setResolution(res)
-            return
-        except Exception:
-            continue
-
-
-def depth_to_colormap(depth_mm: np.ndarray, tof_config: Any | None = None) -> np.ndarray:
-    import cv2
-
-    if depth_mm.size == 0:
-        return np.zeros((480, 640, 3), dtype=np.uint8)
-
-    level = 4
-    if tof_config is not None:
-        level = int(getattr(tof_config, "phaseUnwrappingLevel", 4))
-    max_depth = (level + 1) * 1500
-    normalized = np.clip(depth_mm.astype(np.float32), 0, max_depth)
-    scaled = (normalized / max_depth * 255).astype(np.uint8)
-    return cv2.applyColorMap(scaled, cv2.COLORMAP_TURBO)
 
 
 class OakSrSession:
