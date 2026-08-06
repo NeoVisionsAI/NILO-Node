@@ -177,6 +177,15 @@ ensure_config() {
   fi
 }
 
+apply_poe_camera_config() {
+  local config="${NILO_INSTALL_DIR}/config/nilo-node.yaml"
+  local patch="${NILO_INSTALL_DIR}/scripts/patch_camera_poe.py"
+  [[ -f "${config}" ]] || return 0
+  [[ -f "${patch}" ]] || { warn "patch_camera_poe.py not found — skip PoE config patch"; return 0; }
+  log "Applying PoE camera settings to ${config}..."
+  python3 "${patch}" "${config}"
+}
+
 ensure_env() {
   local env_file="${NILO_INSTALL_DIR}/.env"
   local example="${NILO_INSTALL_DIR}/deploy/env.example"
@@ -305,6 +314,7 @@ cmd_install() {
 
   setup_compose_file "${mode}"
   ensure_config
+  apply_poe_camera_config
   ensure_env
   load_env
   compose_up "${mode}"
@@ -332,6 +342,7 @@ cmd_update() {
   fi
 
   setup_compose_file "${mode}"
+  apply_poe_camera_config
   load_env
   compose_update "${mode}"
   wait_healthy || true

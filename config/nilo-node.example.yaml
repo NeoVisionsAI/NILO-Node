@@ -70,8 +70,10 @@ sources:
 camera:
   enabled: true
   device_id: ""
+  device_ip: "192.168.1.15"        # PoE factory default (Luxonis OAK-D-SR-PoE)
+  connection_mode: "poe"             # auto | usb | poe — production mini PC uses PoE
   auto_connect: true
-  mock_when_unavailable: true
+  mock_when_unavailable: false       # false = require real OAK on PoE in production
   rgb_fps: 30
   tof_fps: 30
   pose_fps: 15

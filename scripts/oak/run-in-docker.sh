@@ -9,7 +9,7 @@
 #   ./scripts/oak/run-in-docker.sh build
 #   ./scripts/oak/run-in-docker.sh shell
 #
-# Requires: Docker, display on host (X11/Wayland with xhost), OAK on USB.
+# Requires: Docker, display (X11), OAK on PoE or USB (see docs/POE_SETUP.md)
 
 set -euo pipefail
 
@@ -35,7 +35,11 @@ run_oak_test() {
   local script_path="$1"
   shift
   enable_display
-  "${COMPOSE[@]}" run --rm oak-test "${script_path}" "$@"
+  # Pass PoE env into container (host networking still applies)
+  OAK_DEVICE_IP="${OAK_DEVICE_IP:-}" \
+  OAK_DEVICE_ID="${OAK_DEVICE_ID:-}" \
+  OAK_CONNECTION="${OAK_CONNECTION:-poe}" \
+    "${COMPOSE[@]}" run --rm oak-test "${script_path}" "$@"
 }
 
 cmd="${1:-tof}"
@@ -44,6 +48,11 @@ shift || true
 case "${cmd}" in
   build)
     build_image
+    ;;
+  discover)
+    build_image
+    OAK_CONNECTION="${OAK_CONNECTION:-poe}" \
+      "${COMPOSE[@]}" run --rm oak-test /app/scripts/oak/discover_devices.py "$@"
     ;;
   tof)
     build_image
@@ -69,7 +78,7 @@ case "${cmd}" in
     log "NILO-Node (hardware image) started — curl http://127.0.0.1:8080/api/v1/health"
     ;;
   *)
-    echo "Usage: $0 {tof|pose|model|build|shell|up} [args...]" >&2
+    echo "Usage: $0 {discover|tof|pose|model|build|shell|up} [args...]" >&2
     exit 1
     ;;
 esac

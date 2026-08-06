@@ -18,11 +18,11 @@ Design goals:
 | Component | Description |
 |-----------|-------------|
 | Host | Mini PC running Ubuntu Server (or minimal Debian-based OS) |
-| Camera | [OAK-D-SR-PoE (OAK ToF)](https://shop.luxonis.com/products/oak-d-sr-poe) over USB |
+| Camera | [OAK-D-SR-PoE (OAK ToF)](https://shop.luxonis.com/products/oak-d-sr-poe) over **PoE/Ethernet** (production) or USB (dev) |
 | WiFi clients | NILO-Cardmed-Dev and other local devices |
 | Audio | Bluetooth microphones |
 
-> **Note:** Although the camera SKU includes PoE, NILO-Node assumes USB connectivity on the host for DepthAI pipeline access inside Docker.
+> **Note:** Production mini PC: OAK → PoE injector → Ethernet. Configure static IP on the host (`docs/POE_SETUP.md`). DepthAI uses `network_mode: host` in Docker — no USB data cable required.
 
 ---
 
@@ -61,7 +61,7 @@ Design goals:
 │  │  │  └─────────────┘  └─────────────┘  └─────────────────────┘   │  │  │
 │  │  └─────────────────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
-│         │ USB              │ WiFi (AP)           │ Bluetooth                 │
+│         │ PoE/Ethernet       │ WiFi (AP)           │ Bluetooth                 │
 │         ▼                  ▼                     ▼                           │
 │    OAK ToF Camera    NILO-Cardmed-Dev       BT Microphones                     │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -75,7 +75,7 @@ Design goals:
 
 ### 2.1 Why a Single Privileged Container
 
-OAK ToF (USB), WiFi AP (`hostapd`), and Bluetooth (BlueZ) all require low-level host access. A **single privileged container** supervised by `supervisord` keeps deployment simple while the **internal codebase stays modular** via plugins and adapters.
+OAK ToF (PoE or USB), WiFi AP (`hostapd`), and Bluetooth (BlueZ) all require low-level host access. A **single privileged container** supervised by `supervisord` keeps deployment simple while the **internal codebase stays modular** via plugins and adapters.
 
 ---
 
@@ -974,7 +974,7 @@ NILO-Node polls this via `ConfigAdapter` and applies flags on each campaign upda
 - **Hot-plug reconnect** — watchdog in `CameraManager` (`reconnect_enabled`, `reconnect_interval_sec`)
 - Synthetic frame fallback when graph fails but device is present (still uses FFmpeg encoders)
 
-**Exit criteria:** With OAK hardware, chunks contain FFmpeg-encoded RGB/ToF and pose landmarks; reconnect after USB replug; mock mode unchanged for dev/CI.
+**Exit criteria:** With OAK hardware, chunks contain FFmpeg-encoded RGB/ToF and pose landmarks; reconnect after PoE link or USB replug; mock mode unchanged for dev/CI.
 
 ---
 

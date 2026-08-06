@@ -28,6 +28,8 @@ class DepthAiDeviceSession:
         self,
         device_id: str,
         *,
+        device_ip: str = "",
+        prefer: str = "auto",
         rgb_fps: int = 30,
         tof_fps: int = 30,
         rgb_width: int = 640,
@@ -39,12 +41,15 @@ class DepthAiDeviceSession:
             raise RuntimeError("DepthAI SDK not installed")
 
         self._device_id = device_id
+        self._device_ip = device_ip.strip() or None
+        self._prefer = prefer
         self._rgb_fps = rgb_fps
         self._tof_fps = tof_fps
         self._rgb_width = rgb_width
         self._rgb_height = rgb_height
         self._depth_width = depth_width
         self._depth_height = depth_height
+        self._connection_meta: dict[str, str] = {}
         self._device: Any = None
         self._q_rgb: Any = None
         self._q_depth: Any = None
@@ -57,13 +62,25 @@ class DepthAiDeviceSession:
     def open(self) -> None:
         import depthai as dai
 
+        from nilo_node.camera.device_connect import resolve_device_info
+
         pipeline = self._build_pipeline(dai)
-        info = dai.DeviceInfo(self._device_id)
+        info, self._connection_meta = resolve_device_info(
+            dai,
+            device_id=self._device_id or None,
+            device_ip=self._device_ip,
+            prefer=self._prefer,
+        )
         self._device = dai.Device(pipeline, info)
         self._q_rgb = self._device.getOutputQueue("rgb", maxSize=4, blocking=False)
         if self._has_depth:
             self._q_depth = self._device.getOutputQueue("depth", maxSize=4, blocking=False)
-        logger.info("DepthAI device session open: %s depth=%s", self._device_id, self._has_depth)
+        logger.info(
+            "DepthAI device session open: %s (%s) depth=%s",
+            self._connection_meta.get("mxid", self._device_id),
+            self._connection_meta.get("connection", "?"),
+            self._has_depth,
+        )
 
     def close(self) -> None:
         if self._device is not None:

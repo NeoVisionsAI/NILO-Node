@@ -14,6 +14,7 @@ services:
     volumes:
       - ./config/nilo-node.yaml:/etc/nilo-node/nilo-node.yaml:ro
       - nilo-data:/data
+      # USB optional (dev only); PoE uses host network — see docs/POE_SETUP.md
       - /dev/bus/usb:/dev/bus/usb
       - /var/run/dbus:/var/run/dbus
     devices:

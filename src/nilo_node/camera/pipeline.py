@@ -143,18 +143,36 @@ class DepthAiCapturePipeline(CapturePipeline):
             raise RuntimeError("DepthAI SDK not installed")
 
         available = discover_devices()
-        if not available:
-            raise RuntimeError("No OAK camera found on USB")
+        prefer = self._cfg.connection_mode
+        device_ip = self._cfg.device_ip.strip() or None
+
+        if not available and not device_ip:
+            raise RuntimeError(
+                "No OAK camera found (USB or PoE). "
+                "PoE: configure host Ethernet — see docs/POE_SETUP.md"
+            )
 
         if device_id:
-            if not any(d.device_id == device_id for d in available):
-                raise RuntimeError(f"Camera {device_id} not found")
+            if available and not any(d.device_id == device_id for d in available):
+                if not device_ip:
+                    raise RuntimeError(f"Camera {device_id} not found")
             self._device_id = device_id
+        elif available:
+            if prefer == "poe":
+                poe = [d for d in available if d.state == "poe"]
+                self._device_id = (poe[0] if poe else available[0]).device_id
+            elif prefer == "usb":
+                usb = [d for d in available if d.state == "usb"]
+                self._device_id = (usb[0] if usb else available[0]).device_id
+            else:
+                self._device_id = available[0].device_id
         else:
-            self._device_id = available[0].device_id
+            self._device_id = device_ip or "poe-oak"
 
         self._session = DepthAiDeviceSession(
             self._device_id,
+            device_ip=device_ip or "",
+            prefer=prefer,
             rgb_fps=self._cfg.rgb_fps,
             tof_fps=self._cfg.tof_fps,
         )

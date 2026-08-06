@@ -75,6 +75,8 @@ class CameraDefaultsConfig(BaseModel):
 class CameraConfig(BaseModel):
     enabled: bool = True
     device_id: str = ""
+    device_ip: str = ""
+    connection_mode: Literal["auto", "usb", "poe"] = "auto"
     auto_connect: bool = True
     mock_when_unavailable: bool = True
     rgb_fps: int = 30

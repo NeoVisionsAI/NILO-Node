@@ -40,8 +40,17 @@ def _bgr_to_photo(frame: np.ndarray, size: tuple[int, int]) -> ImageTk.PhotoImag
 
 
 class TofViewerApp:
-    def __init__(self, device_id: str | None = None) -> None:
-        self._session = OakSrSession(device_id=device_id)
+    def __init__(
+        self,
+        device_id: str | None = None,
+        device_ip: str | None = None,
+        prefer: str | None = None,
+    ) -> None:
+        self._session = OakSrSession(
+            device_id=device_id,
+            device_ip=device_ip,
+            prefer=prefer,
+        )
         self._running = False
         self._worker: threading.Thread | None = None
         self._click_xy: tuple[int, int] | None = None
@@ -118,7 +127,8 @@ class TofViewerApp:
         self._running = True
         self.btn_connect.config(text="Desconectar")
         self.btn_measure.config(state=tk.NORMAL)
-        self.lbl_status.config(text=f"Conectado: {self._session.device_id or 'OAK'}")
+        self.lbl_status.config(text=f"Conectado: {self._session.connection_meta.get('connection', '?')} "
+                                   f"{self._session.device_id or ''}")
         self._worker = threading.Thread(target=self._capture_loop, daemon=True)
         self._worker.start()
 
@@ -199,9 +209,24 @@ class TofViewerApp:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="OAK-D-SR ToF viewer (Tkinter)")
-    parser.add_argument("--device-id", default=None, help="MXID de la cámara (opcional)")
+    parser.add_argument("--device-id", default=None, help="MXID (optional)")
+    parser.add_argument(
+        "--device-ip",
+        default=None,
+        help="PoE IP (e.g. 192.168.1.15). Or env OAK_DEVICE_IP",
+    )
+    parser.add_argument(
+        "--prefer",
+        choices=["auto", "usb", "poe"],
+        default=None,
+        help="Connection preference (default: auto or OAK_CONNECTION env)",
+    )
     args = parser.parse_args()
-    TofViewerApp(device_id=args.device_id).run()
+    TofViewerApp(
+        device_id=args.device_id,
+        device_ip=args.device_ip,
+        prefer=args.prefer,
+    ).run()
 
 
 if __name__ == "__main__":

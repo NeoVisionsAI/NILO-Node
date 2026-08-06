@@ -70,8 +70,18 @@ class YoloHostRunner:
 
 
 class PoseViewerApp:
-    def __init__(self, device_id: str | None = None) -> None:
-        self._session = OakSrSession(device_id=device_id, fps=30)
+    def __init__(
+        self,
+        device_id: str | None = None,
+        device_ip: str | None = None,
+        prefer: str | None = None,
+    ) -> None:
+        self._session = OakSrSession(
+            device_id=device_id,
+            device_ip=device_ip,
+            fps=30,
+            prefer=prefer,
+        )
         self._runner: MediapipeRunner | YoloHostRunner | None = None
         self._backend = tk.StringVar(value="mediapipe")
         self._model_dir = DEFAULT_MODELS_DIR
@@ -247,8 +257,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="OAK pose viewer (MediaPipe / YOLO)")
     parser.add_argument("--device-id", default=None)
+    parser.add_argument("--device-ip", default=None, help="PoE IP, e.g. 192.168.1.15")
+    parser.add_argument("--prefer", choices=["auto", "usb", "poe"], default=None)
     args = parser.parse_args()
-    PoseViewerApp(device_id=args.device_id).run()
+    PoseViewerApp(device_id=args.device_id, device_ip=args.device_ip, prefer=args.prefer).run()
 
 
 if __name__ == "__main__":

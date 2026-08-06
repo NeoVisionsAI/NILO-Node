@@ -8,10 +8,19 @@ All tools run in the **`nilo-node:hardware`** image. No host Python venv.
 # Docker (deploy script installs this)
 sudo ./scripts/install.sh
 
+# PoE: static IP on Ethernet port to OAK (production)
+sudo ./scripts/oak/setup-poe-network.sh
+ping -c 2 192.168.1.15
+
 # Allow GUI from container (once per desktop session)
 xhost +local:docker
+```
 
-# USB permissions for OAK
+PoE topology: **OAK → PoE injector → Ethernet mini PC**. See `docs/POE_SETUP.md`.
+
+USB (dev only):
+
+```bash
 echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/99-oak-usb.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
@@ -26,7 +35,11 @@ chmod +x scripts/oak/run-in-docker.sh
 # Build image (first time)
 ./scripts/oak/run-in-docker.sh build
 
+# Discover OAK (PoE or USB)
+./scripts/oak/run-in-docker.sh discover
+
 # 1) ToF viewer — connect, depth colormap, measure mm
+export OAK_DEVICE_IP=192.168.1.15   # if discover is empty
 ./scripts/oak/run-in-docker.sh tof
 
 # 2) Pose viewer — MediaPipe or YOLO
@@ -63,7 +76,8 @@ docker compose -f docker-compose.hardware.yml up -d nilo-node-hw
 |-------|--------|
 | Image | `docker/Dockerfile` target `hardware` — `[hardware]` pip extras + Tk + OpenGL |
 | GUI | X11 socket `/tmp/.X11-unix` + `DISPLAY` from host |
-| USB | `/dev/bus/usb` bind-mount, `privileged: true` |
+| Network | `network_mode: host` — PoE camera on same L3 as host |
+| USB | Optional bind-mount for dev; PoE needs no USB data |
 | Scripts | `/app/scripts/oak/` inside container |
 
 ## Troubleshooting
@@ -72,7 +86,7 @@ docker compose -f docker-compose.hardware.yml up -d nilo-node-hw
 |-------|-----|
 | `cannot open display` | Run `xhost +local:docker`, check `echo $DISPLAY` |
 | Wayland session | Try `export DISPLAY=:0` or run from X11 session |
-| No OAK device | udev rule, replug USB, `lsusb \| grep 03e7` |
+| No OAK device | PoE: `setup-poe-network.sh`, `ping 192.168.1.15`, `discover`. USB: udev, `lsusb \| grep 03e7` |
 | Tk window empty | Wait a few seconds for ToF warmup |
 | Build slow | Normal first time (mediapipe, opencv, depthai) |
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
+from oak.device_connect import list_devices, resolve_device_info
 
 logger = logging.getLogger(__name__)
 
@@ -16,21 +19,6 @@ class OakFrameSet:
     rgb: np.ndarray | None = None
     depth_mm: np.ndarray | None = None
     depth_colormap: np.ndarray | None = None
-
-
-def list_devices() -> list[dict[str, str]]:
-    import depthai as dai
-
-    devices = []
-    for info in dai.Device.getAllAvailableDevices():
-        devices.append(
-            {
-                "mxid": info.getMxId(),
-                "name": getattr(info, "name", "OAK"),
-                "protocol": str(getattr(info, "protocol", "")),
-            }
-        )
-    return devices
 
 
 def _configure_tof_node(tof: Any) -> Any:
@@ -88,7 +76,7 @@ def build_oak_sr_pipeline(
 
     raise RuntimeError(
         "DepthAI SDK too old or missing ToF/Camera nodes. "
-        "Install depthai>=2.24 and use USB-connected OAK-D-SR."
+        "Install depthai>=2.24 for OAK-D-SR (PoE or USB)."
     )
 
 
@@ -131,11 +119,21 @@ def depth_to_colormap(depth_mm: np.ndarray, tof_config: Any | None = None) -> np
 
 
 class OakSrSession:
-    """Blocking DepthAI session for GUI test tools."""
+    """Blocking DepthAI session for GUI test tools (PoE or USB)."""
 
-    def __init__(self, device_id: str | None = None, *, fps: int = 30) -> None:
+    def __init__(
+        self,
+        device_id: str | None = None,
+        *,
+        device_ip: str | None = None,
+        fps: int = 30,
+        prefer: str | None = None,
+    ) -> None:
         self._device_id = device_id
+        self._device_ip = device_ip
         self._fps = fps
+        self._prefer = prefer or os.environ.get("OAK_CONNECTION", "auto")
+        self._connection_meta: dict[str, str] = {}
         self._device: Any = None
         self._q_depth: Any = None
         self._q_rgb: Any = None
@@ -155,21 +153,21 @@ class OakSrSession:
     def latest_depth(self) -> np.ndarray | None:
         return self._latest_depth
 
+    @property
+    def connection_meta(self) -> dict[str, str]:
+        return dict(self._connection_meta)
+
     def connect(self) -> list[dict[str, str]]:
         import depthai as dai
 
         available = list_devices()
-        if not available:
-            raise RuntimeError("No OAK device found on USB")
-
-        mxid = self._device_id
-        if mxid is None:
-            mxid = available[0]["mxid"]
-        elif not any(d["mxid"] == mxid for d in available):
-            raise RuntimeError(f"Device {mxid} not found")
-
         pipeline, self._tof_config = build_oak_sr_pipeline(dai, fps=self._fps, include_rgb=True)
-        info = dai.DeviceInfo(mxid)
+        info, self._connection_meta = resolve_device_info(
+            dai,
+            device_id=self._device_id,
+            device_ip=self._device_ip,
+            prefer=self._prefer,
+        )
         self._device = dai.Device(pipeline, info)
         self._q_depth = self._device.getOutputQueue("depth", maxSize=4, blocking=False)
         try:
@@ -177,10 +175,15 @@ class OakSrSession:
         except Exception:
             self._q_rgb = None
 
-        self._device_id = mxid
+        self._device_id = self._connection_meta.get("mxid") or self._device_id
         features = self._device.getConnectedCameraFeatures()
-        logger.info("Connected %s — cameras: %s", mxid, features)
-        return available
+        logger.info(
+            "Connected OAK (%s) %s — cameras: %s",
+            self._connection_meta.get("connection", "?"),
+            self._device_id,
+            features,
+        )
+        return available or [self._connection_meta]
 
     def disconnect(self) -> None:
         if self._device is not None:
