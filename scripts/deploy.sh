@@ -3,7 +3,9 @@
 #
 # Usage:
 #   sudo ./scripts/deploy.sh install              # first-time setup
-#   sudo ./scripts/deploy.sh update               # pull/build + recreate
+#   sudo ./scripts/deploy.sh update               # pull code + fast rebuild (cached deps)
+#   sudo ./scripts/deploy.sh reload               # restart container, no rebuild
+#   sudo NILO_DOCKER_PULL=1 ./scripts/deploy.sh update   # also refresh base images
 #   ./scripts/deploy.sh status                    # health + container state
 #   ./scripts/deploy.sh logs [-f]                 # compose logs
 #   sudo ./scripts/deploy.sh stop                 # stop container
@@ -32,6 +34,7 @@ NILO_REPO="${NILO_REPO:-https://github.com/NeoVisions/NILO-Node.git}"
 NILO_REPO_BRANCH="${NILO_REPO_BRANCH:-main}"
 NILO_IMAGE="${NILO_IMAGE:-}"
 DEPLOY_MODE="${DEPLOY_MODE:-auto}"
+NILO_DOCKER_PULL="${NILO_DOCKER_PULL:-0}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 API_PORT="${API_PORT:-8080}"
@@ -227,6 +230,17 @@ load_env() {
   fi
 }
 
+compose_build() {
+  local pull_flag=()
+  if [[ "${NILO_DOCKER_PULL}" == "1" ]]; then
+    pull_flag=(--pull)
+    log "Docker build with --pull (refresh base images)"
+  else
+    log "Docker build using cache (set NILO_DOCKER_PULL=1 to refresh base images)"
+  fi
+  ${DC[@]} -f "${COMPOSE_FILE}" build "${pull_flag[@]}"
+}
+
 compose_up() {
   local mode="$1"
   cd "${NILO_INSTALL_DIR}"
@@ -239,7 +253,7 @@ compose_up() {
     ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
   else
     log "Building image nilo-node:local..."
-    ${DC[@]} -f "${COMPOSE_FILE}" build --pull
+    compose_build
     ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
   fi
 }
@@ -254,9 +268,15 @@ compose_update() {
     ${DC[@]} -f "${COMPOSE_FILE}" pull
     ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
   else
-    ${DC[@]} -f "${COMPOSE_FILE}" build --pull
+    compose_build
     ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
   fi
+}
+
+compose_reload() {
+  cd "${NILO_INSTALL_DIR}"
+  log "Restarting container without rebuild..."
+  ${DC[@]} -f "${COMPOSE_FILE}" up -d --no-build --remove-orphans
 }
 
 install_systemd_unit() {
@@ -327,6 +347,19 @@ cmd_install() {
   log "Install complete. Install dir: ${NILO_INSTALL_DIR}"
   log "API token in: ${NILO_INSTALL_DIR}/.env (NILO_LOCAL_API_TOKEN)"
   log "Verify: curl -H \"Authorization: Bearer \$TOKEN\" http://127.0.0.1:${API_PORT}/api/v1/node/info"
+}
+
+cmd_reload() {
+  need_root reload
+  local mode
+  mode="$(detect_deploy_mode)"
+  [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR}"
+  setup_compose_file "${mode}"
+  apply_poe_camera_config
+  load_env
+  compose_reload
+  wait_healthy || true
+  log "Reload complete (no image rebuild)."
 }
 
 cmd_update() {
@@ -436,13 +469,14 @@ main() {
   case "${cmd}" in
     install) cmd_install ;;
     update) cmd_update ;;
+    reload) cmd_reload ;;
     status) cmd_status ;;
     logs) cmd_logs "${1:-}" ;;
     stop) cmd_stop ;;
     uninstall) cmd_uninstall ;;
     -h|--help|help) usage 0 ;;
     *)
-      die "Unknown command: ${cmd}. Use: install | update | status | logs | stop | uninstall"
+      die "Unknown command: ${cmd}. Use: install | update | reload | status | logs | stop | uninstall"
       ;;
   esac
 }

@@ -24,11 +24,13 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev/bus/usb:/dev/bus/usb
+      - ./scripts/oak:/app/scripts/oak:ro
+      - ./src:/app/src:ro
       - ./scripts/oak/models:/app/scripts/oak/models
     environment:
       DISPLAY: ${DISPLAY:-:0}
       QT_X11_NO_MITSHM: "1"
-      PYTHONPATH: /app/scripts
+      PYTHONPATH: /app/src:/app/scripts
       OAK_DEVICE_IP: ${OAK_DEVICE_IP:-}
       OAK_DEVICE_ID: ${OAK_DEVICE_ID:-}
       OAK_CONNECTION: ${OAK_CONNECTION:-poe}

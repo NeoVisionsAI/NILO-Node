@@ -12,13 +12,18 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Metadata only — keeps pip dependency layers cached when src/ changes
 COPY pyproject.toml README.md ./
-COPY src ./src
 
 # --- Runtime: NILO-Node orchestrator (slim) ---------------------------------
 FROM base AS runtime
 
-RUN pip install --no-cache-dir .
+RUN mkdir -p src/nilo_node \
+    && printf '%s\n' '__version__ = "0.0.0"' > src/nilo_node/__init__.py \
+    && pip install --no-cache-dir .
+
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
 
 COPY config/nilo-node.example.yaml /etc/nilo-node/nilo-node.yaml
 COPY docker/entrypoint.sh /entrypoint.sh
@@ -46,7 +51,14 @@ RUN apt-get update \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir ".[hardware]"
+# Heavy deps (depthai, mediapipe, ultralytics/torch) — cached until pyproject.toml changes
+RUN mkdir -p src/nilo_node \
+    && printf '%s\n' '__version__ = "0.0.0"' > src/nilo_node/__init__.py \
+    && pip install --no-cache-dir ".[hardware]"
+
+# Application code only — fast rebuild, no re-download of NVIDIA/torch wheels
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
 
 COPY config/nilo-node.example.yaml /etc/nilo-node/nilo-node.yaml
 COPY docker/entrypoint.sh /entrypoint.sh
