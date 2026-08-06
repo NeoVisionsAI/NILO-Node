@@ -48,7 +48,10 @@ class OakSrGraph:
         frame = _queue_try_get(self.depth_queue)
         if frame is None:
             return None
-        depth = frame.getFrame()
+        if hasattr(frame, "getFrame"):
+            depth = frame.getFrame()
+        else:
+            depth = frame.getCvFrame()
         if depth.dtype.kind != "u":
             depth = depth.astype("uint16")
         return depth
@@ -124,27 +127,133 @@ def _link_tof_camera_v2(dai: Any, pipeline: Any, tof: Any, *, fps: int) -> None:
     cam_tof.raw.link(tof.input)
 
 
-def _setup_tof_node_v3_build(tof: Any, dai: Any, *, fps: int) -> None:
-    socket = _tof_socket(dai)
-    tof_fps = float(max(fps * 2, 30))
-    profile = _tof_profile(dai)
-    build = tof.build
-
-    if profile is not None:
+def _call_build(node: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call node.build() — v3 Python bindings often require positional args only."""
+    build = node.build
+    if args:
         try:
-            build(boardSocket=socket, profile=profile, fps=tof_fps)
-            logger.info("ToF node: build() with profile=%s", profile)
-            return
-        except TypeError:
-            try:
-                build(socket, profile, tof_fps)
-                logger.info("ToF node: build() positional with profile")
-                return
-            except Exception as exc:
-                logger.warning("ToF build(profile) failed: %s", exc)
+            built = build(*args)
+            return built if built is not None else node
+        except (TypeError, RuntimeError):
+            if not kwargs:
+                raise
+    if kwargs:
+        built = build(**kwargs)
+        return built if built is not None else node
+    built = build()
+    return built if built is not None else node
 
-    build(boardSocket=socket, fps=tof_fps)
-    logger.info("ToF node: build() without profile")
+
+def _build_tof_v3_node(pipeline: Any, dai: Any, *, fps: int) -> Any:
+    tof_node = pipeline.create(dai.node.ToF)
+    socket = _tof_socket(dai)
+    auto_socket = getattr(dai.CameraBoardSocket, "AUTO", socket)
+    profile = _tof_profile(dai)
+    tof_fps = float(max(fps * 2, 30))
+
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    if profile is not None:
+        attempts.extend(
+            [
+                ((auto_socket, profile), {}),
+                ((auto_socket, profile, tof_fps), {}),
+                ((socket, profile), {}),
+                ((socket, profile, tof_fps), {}),
+                ((), {"boardSocket": auto_socket, "profile": profile, "fps": tof_fps}),
+                ((), {"boardSocket": auto_socket, "profile": profile}),
+            ]
+        )
+    attempts.extend(
+        [
+            ((auto_socket,), {}),
+            ((auto_socket, tof_fps), {}),
+            ((socket,), {}),
+            ((socket, tof_fps), {}),
+            ((), {"boardSocket": auto_socket, "fps": tof_fps}),
+            ((), {"boardSocket": auto_socket}),
+        ]
+    )
+
+    last_exc: Exception | None = None
+    for args, kwargs in attempts:
+        try:
+            tof = _call_build(tof_node, *args, **kwargs)
+            logger.info("ToF build OK args=%s kwargs=%s", args, kwargs)
+            return tof
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("ToF build attempt failed args=%s kwargs=%s: %s", args, kwargs, exc)
+
+    raise RuntimeError(f"ToF build() failed for OAK-D-SR: {last_exc}") from last_exc
+
+
+def _request_camera_output(
+    cam: Any,
+    dai: Any,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+) -> Any:
+    img_type = _rgb_img_type(dai)
+    size = (width, height)
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    if img_type is not None:
+        attempts.extend(
+            [
+                ((size, img_type), {}),
+                ((size, img_type, float(fps)), {}),
+                ((), {"size": size, "type": img_type, "fps": float(fps)}),
+                ((), {"size": size, "type": img_type}),
+            ]
+        )
+    attempts.extend(
+        [
+            ((size,), {}),
+            ((size, float(fps)), {}),
+            ((), {"size": size, "fps": float(fps)}),
+            ((), {"size": size}),
+        ]
+    )
+
+    last_exc: Exception | None = None
+    for args, kwargs in attempts:
+        try:
+            if kwargs:
+                return cam.requestOutput(**kwargs)
+            return cam.requestOutput(*args)
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("requestOutput attempt failed args=%s kwargs=%s: %s", args, kwargs, exc)
+
+    raise RuntimeError(f"Camera requestOutput failed: {last_exc}") from last_exc
+
+
+def _build_rgb_v3_node(pipeline: Any, dai: Any, *, fps: int, rgb_width: int, rgb_height: int) -> Any:
+    cam_node = pipeline.create(dai.node.Camera)
+    socket = _pick_rgb_socket(dai)
+
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
+        ((socket,), {}),
+        ((socket, None, float(fps)), {}),
+        ((), {"boardSocket": socket}),
+        ((), {"boardSocket": socket, "fps": float(fps)}),
+    ]
+
+    last_exc: Exception | None = None
+    for args, kwargs in attempts:
+        try:
+            cam = _call_build(cam_node, *args, **kwargs)
+            rgb_out = _request_camera_output(
+                cam, dai, width=rgb_width, height=rgb_height, fps=fps
+            )
+            logger.info("RGB camera build OK socket=%s", socket)
+            return rgb_out
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("RGB build attempt failed args=%s kwargs=%s: %s", args, kwargs, exc)
+
+    raise RuntimeError(f"RGB Camera build() failed: {last_exc}") from last_exc
 
 
 def _create_output_queue(output: Any, *, max_size: int = 4, blocking: bool = False) -> Any:
@@ -243,44 +352,19 @@ def _build_pipeline_v3(
             "DepthAI SDK missing ToF node. Install depthai>=2.24 for OAK-D-SR (PoE or USB)."
         )
 
-    tof = pipeline.create(dai.node.ToF)
     tof_config = _TofColormapDefaults()
-
-    if hasattr(tof, "build"):
-        _setup_tof_node_v3_build(tof, dai, fps=fps)
-    elif hasattr(tof, "initialConfig"):
-        tof_config = _configure_tof_node_v2(tof)
-        _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
-    else:
-        if hasattr(tof, "setNumShaves"):
-            tof.setNumShaves(1)
-        _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
-
+    tof = _build_tof_v3_node(pipeline, dai, fps=fps)
     depth_queue = _create_output_queue(tof.depth)
     rgb_queue = None
 
     if include_rgb and hasattr(dai.node, "Camera"):
-        socket = _pick_rgb_socket(dai)
-        cam = pipeline.create(dai.node.Camera)
-        if hasattr(cam, "build"):
-            try:
-                cam.build(boardSocket=socket, fps=float(fps))
-            except TypeError:
-                cam.build(socket, float(fps))
-        else:
-            cam.setBoardSocket(socket)
-            cam.setFps(fps)
-
-        img_type = _rgb_img_type(dai)
-        if hasattr(cam, "requestOutput"):
-            try:
-                if img_type is not None:
-                    rgb_out = cam.requestOutput((rgb_width, rgb_height), type=img_type)
-                else:
-                    rgb_out = cam.requestOutput((rgb_width, rgb_height))
-            except TypeError:
-                rgb_out = cam.requestOutput((rgb_width, rgb_height))
+        try:
+            rgb_out = _build_rgb_v3_node(
+                pipeline, dai, fps=fps, rgb_width=rgb_width, rgb_height=rgb_height
+            )
             rgb_queue = _create_output_queue(rgb_out)
+        except Exception as exc:
+            logger.warning("RGB stream unavailable (%s) — depth-only mode", exc)
 
     logger.info("Pipeline: OAK-D-SR ToF (DepthAI v3 queue API)")
     return tof_config, depth_queue, rgb_queue
