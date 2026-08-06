@@ -1,4 +1,4 @@
-"""OAK-D-SR ToF + RGB pipeline — DepthAI 2.x (initialConfig) and 3.x (build) compatible."""
+"""OAK-D-SR ToF + RGB pipeline — DepthAI 2.x (XLink) and 3.x (createOutputQueue) compatible."""
 
 from __future__ import annotations
 
@@ -13,6 +13,60 @@ TOF_SOCKET_NAME = "CAM_A"
 
 class _TofColormapDefaults:
     phaseUnwrappingLevel = 4
+
+
+@dataclass
+class OakSrGraph:
+    """Live OAK-D-SR capture graph (v2 Device queue or v3 pipeline queue API)."""
+
+    api: str
+    pipeline: Any
+    device: Any
+    tof_config: Any | None
+    depth_queue: Any
+    rgb_queue: Any | None
+    started: bool = False
+
+    def close(self) -> None:
+        if self.api == "v3" and self.started:
+            try:
+                self.pipeline.stop()
+            except Exception as exc:
+                logger.debug("pipeline.stop: %s", exc)
+            try:
+                if hasattr(self.pipeline, "wait"):
+                    self.pipeline.wait()
+            except Exception:
+                pass
+        if self.device is not None:
+            try:
+                self.device.close()
+            except Exception as exc:
+                logger.debug("device.close: %s", exc)
+
+    def poll_depth(self) -> Any | None:
+        frame = _queue_try_get(self.depth_queue)
+        if frame is None:
+            return None
+        depth = frame.getFrame()
+        if depth.dtype.kind != "u":
+            depth = depth.astype("uint16")
+        return depth
+
+    def poll_rgb_bgr(self) -> Any | None:
+        frame = _queue_try_get(self.rgb_queue)
+        if frame is None:
+            return None
+        bgr = frame.getCvFrame()
+        if bgr is None:
+            return None
+        if len(bgr.shape) == 3 and bgr.shape[2] == 3:
+            return bgr
+        return bgr
+
+
+def uses_depthai_v2(dai: Any) -> bool:
+    return hasattr(dai.node, "XLinkOut")
 
 
 def _tof_socket(dai: Any) -> Any:
@@ -71,7 +125,7 @@ def _link_tof_camera_v2(dai: Any, pipeline: Any, tof: Any, *, fps: int) -> None:
     cam_tof.raw.link(tof.input)
 
 
-def _setup_tof_node_v3_build(dai: Any, tof: Any, *, fps: int) -> None:
+def _setup_tof_node_v3_build(tof: Any, dai: Any, *, fps: int) -> None:
     socket = _tof_socket(dai)
     tof_fps = float(max(fps * 2, 30))
     profile = _tof_profile(dai)
@@ -94,37 +148,48 @@ def _setup_tof_node_v3_build(dai: Any, tof: Any, *, fps: int) -> None:
     logger.info("ToF node: build() without profile")
 
 
-def _add_rgb_stream(dai: Any, pipeline: Any, *, fps: int, width: int = 640, height: int = 480) -> None:
-    if not hasattr(dai.node, "ColorCamera"):
-        return
-    cam_rgb = pipeline.create(dai.node.ColorCamera)
-    cam_rgb.setBoardSocket(_pick_rgb_socket(dai))
-    _set_rgb_resolution(cam_rgb, dai)
-    cam_rgb.setInterleaved(False)
-    cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    cam_rgb.setFps(fps)
-    cam_rgb.setPreviewSize(width, height)
-
-    xout_rgb = pipeline.create(dai.node.XLinkOut)
-    xout_rgb.setStreamName("rgb")
-    cam_rgb.preview.link(xout_rgb.input)
+def _create_output_queue(output: Any, *, max_size: int = 4, blocking: bool = False) -> Any:
+    try:
+        return output.createOutputQueue(maxSize=max_size, blocking=blocking)
+    except TypeError:
+        try:
+            return output.createOutputQueue(max_size, blocking)
+        except TypeError:
+            return output.createOutputQueue()
 
 
-def _add_depth_output(pipeline: Any, tof: Any, dai: Any) -> None:
-    xout_depth = pipeline.create(dai.node.XLinkOut)
-    xout_depth.setStreamName("depth")
-    tof.depth.link(xout_depth.input)
+def _queue_try_get(queue: Any | None) -> Any | None:
+    if queue is None:
+        return None
+    if hasattr(queue, "tryGet"):
+        return queue.tryGet()
+    if hasattr(queue, "has") and queue.has():
+        return queue.get()
+    return None
 
 
-def build_oak_sr_pipeline(
+def _rgb_img_type(dai: Any) -> Any | None:
+    frame_type = getattr(dai, "ImgFrame", None)
+    if frame_type is None:
+        return None
+    type_enum = getattr(frame_type, "Type", None)
+    if type_enum is None:
+        return None
+    for name in ("BGR888p", "RGB888p", "BGR888i", "RGB888i"):
+        value = getattr(type_enum, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _build_pipeline_v2(
     dai: Any,
     *,
-    fps: int = 30,
-    include_rgb: bool = True,
-    rgb_width: int = 640,
-    rgb_height: int = 480,
+    fps: int,
+    include_rgb: bool,
+    rgb_width: int,
+    rgb_height: int,
 ) -> tuple[Any, Any | None]:
-    """Build Luxonis ToF pipeline for OAK-D-SR (CAM_A = ToF sensor)."""
     if not hasattr(dai.node, "ToF"):
         raise RuntimeError(
             "DepthAI SDK missing ToF node. Install depthai>=2.24 for OAK-D-SR (PoE or USB)."
@@ -138,25 +203,164 @@ def build_oak_sr_pipeline(
         tof_config = _configure_tof_node_v2(tof)
         if hasattr(dai.node, "Camera"):
             _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
-        logger.info("Pipeline: OAK-D-SR ToF (DepthAI initialConfig API)")
-    elif hasattr(tof, "build"):
-        tof_config = _TofColormapDefaults()
-        _setup_tof_node_v3_build(dai, tof, fps=fps)
-        logger.info("Pipeline: OAK-D-SR ToF (DepthAI build() API)")
     else:
         tof_config = _TofColormapDefaults()
         if hasattr(tof, "setNumShaves"):
             tof.setNumShaves(1)
         if hasattr(dai.node, "Camera"):
             _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
-        logger.info("Pipeline: OAK-D-SR ToF (minimal Camera + ToF link)")
 
-    _add_depth_output(pipeline, tof, dai)
+    xout_depth = pipeline.create(dai.node.XLinkOut)
+    xout_depth.setStreamName("depth")
+    tof.depth.link(xout_depth.input)
 
-    if include_rgb:
-        _add_rgb_stream(dai, pipeline, fps=fps, width=rgb_width, height=rgb_height)
+    if include_rgb and hasattr(dai.node, "ColorCamera"):
+        cam_rgb = pipeline.create(dai.node.ColorCamera)
+        cam_rgb.setBoardSocket(_pick_rgb_socket(dai))
+        _set_rgb_resolution(cam_rgb, dai)
+        cam_rgb.setInterleaved(False)
+        cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+        cam_rgb.setFps(fps)
+        cam_rgb.setPreviewSize(rgb_width, rgb_height)
+        xout_rgb = pipeline.create(dai.node.XLinkOut)
+        xout_rgb.setStreamName("rgb")
+        cam_rgb.preview.link(xout_rgb.input)
 
+    logger.info("Pipeline: OAK-D-SR ToF (DepthAI v2 XLink API)")
     return pipeline, tof_config
+
+
+def _build_pipeline_v3(
+    dai: Any,
+    pipeline: Any,
+    *,
+    fps: int,
+    include_rgb: bool,
+    rgb_width: int,
+    rgb_height: int,
+) -> tuple[Any | None, Any, Any | None]:
+    if not hasattr(dai.node, "ToF"):
+        raise RuntimeError(
+            "DepthAI SDK missing ToF node. Install depthai>=2.24 for OAK-D-SR (PoE or USB)."
+        )
+
+    tof = pipeline.create(dai.node.ToF)
+    tof_config = _TofColormapDefaults()
+
+    if hasattr(tof, "build"):
+        _setup_tof_node_v3_build(tof, dai, fps=fps)
+    elif hasattr(tof, "initialConfig"):
+        tof_config = _configure_tof_node_v2(tof)
+        _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
+    else:
+        if hasattr(tof, "setNumShaves"):
+            tof.setNumShaves(1)
+        _link_tof_camera_v2(dai, pipeline, tof, fps=fps)
+
+    depth_queue = _create_output_queue(tof.depth)
+    rgb_queue = None
+
+    if include_rgb and hasattr(dai.node, "Camera"):
+        socket = _pick_rgb_socket(dai)
+        cam = pipeline.create(dai.node.Camera)
+        if hasattr(cam, "build"):
+            try:
+                cam.build(boardSocket=socket, fps=float(fps))
+            except TypeError:
+                cam.build(socket, float(fps))
+        else:
+            cam.setBoardSocket(socket)
+            cam.setFps(fps)
+
+        img_type = _rgb_img_type(dai)
+        if hasattr(cam, "requestOutput"):
+            try:
+                if img_type is not None:
+                    rgb_out = cam.requestOutput((rgb_width, rgb_height), type=img_type)
+                else:
+                    rgb_out = cam.requestOutput((rgb_width, rgb_height))
+            except TypeError:
+                rgb_out = cam.requestOutput((rgb_width, rgb_height))
+            rgb_queue = _create_output_queue(rgb_out)
+
+    logger.info("Pipeline: OAK-D-SR ToF (DepthAI v3 queue API)")
+    return tof_config, depth_queue, rgb_queue
+
+
+def open_oak_sr_graph(
+    dai: Any,
+    device_info: Any,
+    *,
+    fps: int = 30,
+    include_rgb: bool = True,
+    rgb_width: int = 640,
+    rgb_height: int = 480,
+) -> OakSrGraph:
+    """Open a connected OAK-D-SR graph on the given device (PoE IP or USB MXID)."""
+    if uses_depthai_v2(dai):
+        pipeline, tof_config = _build_pipeline_v2(
+            dai,
+            fps=fps,
+            include_rgb=include_rgb,
+            rgb_width=rgb_width,
+            rgb_height=rgb_height,
+        )
+        device = dai.Device(pipeline, device_info)
+        depth_queue = device.getOutputQueue("depth", maxSize=4, blocking=False)
+        rgb_queue = None
+        if include_rgb:
+            try:
+                rgb_queue = device.getOutputQueue("rgb", maxSize=4, blocking=False)
+            except Exception:
+                rgb_queue = None
+        return OakSrGraph(
+            api="v2",
+            pipeline=pipeline,
+            device=device,
+            tof_config=tof_config,
+            depth_queue=depth_queue,
+            rgb_queue=rgb_queue,
+            started=True,
+        )
+
+    device = dai.Device(device_info)
+    pipeline = dai.Pipeline(device)
+    tof_config, depth_queue, rgb_queue = _build_pipeline_v3(
+        dai,
+        pipeline,
+        fps=fps,
+        include_rgb=include_rgb,
+        rgb_width=rgb_width,
+        rgb_height=rgb_height,
+    )
+    pipeline.start()
+    return OakSrGraph(
+        api="v3",
+        pipeline=pipeline,
+        device=device,
+        tof_config=tof_config,
+        depth_queue=depth_queue,
+        rgb_queue=rgb_queue,
+        started=True,
+    )
+
+
+def build_oak_sr_pipeline(
+    dai: Any,
+    *,
+    fps: int = 30,
+    include_rgb: bool = True,
+    rgb_width: int = 640,
+    rgb_height: int = 480,
+) -> tuple[Any, Any | None]:
+    """Build pipeline only (DepthAI v2). v3 callers should use open_oak_sr_graph()."""
+    return _build_pipeline_v2(
+        dai,
+        fps=fps,
+        include_rgb=include_rgb,
+        rgb_width=rgb_width,
+        rgb_height=rgb_height,
+    )
 
 
 def depth_to_colormap(depth_mm: Any, tof_config: Any | None = None) -> Any:

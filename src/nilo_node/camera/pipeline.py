@@ -205,7 +205,17 @@ class DepthAiCapturePipeline(CapturePipeline):
     def is_alive(self) -> bool:
         if self._use_synthetic:
             return self._device_id is not None
-        return self._session is not None and self._session.is_open
+        if self._session is None:
+            return False
+        if not self._session.is_open:
+            return False
+        graph = getattr(self._session, "_graph", None)
+        if graph is not None and getattr(graph, "api", "") == "v3":
+            try:
+                return graph.pipeline.isRunning()
+            except Exception:
+                return True
+        return True
 
     async def begin_chunk(self, session: ChunkCaptureSession) -> None:
         flags = session.flags
