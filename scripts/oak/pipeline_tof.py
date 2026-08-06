@@ -160,7 +160,12 @@ class OakSrSession:
     def connect(self) -> list[dict[str, str]]:
         import depthai as dai
 
-        available = list_devices()
+        available: list[dict[str, str]] = []
+        try:
+            available = list_devices()
+        except Exception as exc:
+            logger.warning("Device list failed (%s) — will try direct IP if configured", exc)
+
         pipeline, self._tof_config = build_oak_sr_pipeline(dai, fps=self._fps, include_rgb=True)
         info, self._connection_meta = resolve_device_info(
             dai,

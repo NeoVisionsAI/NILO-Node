@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import logging
 
+from nilo_node.camera.device_connect import (
+    device_display_name,
+    device_ip,
+    device_mxid,
+    is_poe_protocol,
+    iter_available_devices,
+)
 from nilo_node.camera.models import CameraDeviceInfo
 
 logger = logging.getLogger(__name__)
@@ -25,11 +32,6 @@ def _protocol_name(info: object) -> str:
     return str(proto)
 
 
-def _is_poe_protocol(protocol: str) -> bool:
-    upper = protocol.upper()
-    return "TCP" in upper or "IP" in upper
-
-
 def discover_devices() -> list[CameraDeviceInfo]:
     """Return OAK devices on USB or PoE (same L3 subnet as host)."""
     if not depthai_available():
@@ -40,28 +42,21 @@ def discover_devices() -> list[CameraDeviceInfo]:
 
     devices: list[CameraDeviceInfo] = []
     try:
-        for info in dai.Device.getAllAvailableDevices():
+        for info in iter_available_devices(dai):
             protocol = _protocol_name(info)
-            ip = ""
-            for attr in ("getIpAddress", "getIP"):
-                fn = getattr(info, attr, None)
-                if callable(fn):
-                    try:
-                        ip = str(fn() or "")
-                        break
-                    except Exception:
-                        pass
+            ip = device_ip(info) or ""
+            mxid = device_mxid(info)
             devices.append(
                 CameraDeviceInfo(
-                    device_id=info.getMxId(),
-                    name=info.name if hasattr(info, "name") else "OAK Camera",
+                    device_id=mxid,
+                    name=device_display_name(info),
                     platform=str(getattr(info, "platform", "")),
                     protocol=protocol,
-                    state="poe" if _is_poe_protocol(protocol) else "usb",
+                    state="poe" if is_poe_protocol(protocol) or ip else "usb",
                 )
             )
             if ip:
-                logger.debug("OAK %s at %s (%s)", info.getMxId()[:8], ip, protocol)
+                logger.debug("OAK %s at %s (%s)", mxid[:8], ip, protocol)
     except Exception as exc:
         logger.warning("Camera discovery failed: %s", exc)
     return devices

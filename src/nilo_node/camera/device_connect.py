@@ -29,7 +29,55 @@ def device_ip(info: Any) -> str | None:
                     return str(ip)
             except Exception:
                 pass
+    name = getattr(info, "name", None)
+    if isinstance(name, str) and name and name[0].isdigit():
+        return name
     return None
+
+
+def device_mxid(info: Any) -> str:
+    """MxId across DepthAI 2.x (getMxId) and 3.x (mxid / getDeviceId)."""
+    for method in ("getMxId", "getDeviceId"):
+        fn = getattr(info, method, None)
+        if callable(fn):
+            try:
+                value = fn()
+                if value:
+                    return str(value)
+            except Exception:
+                pass
+    for attr in ("mxid", "deviceId", "name"):
+        value = getattr(info, attr, None)
+        if value:
+            return str(value)
+    return "unknown"
+
+
+def device_display_name(info: Any) -> str:
+    name = getattr(info, "name", None)
+    if name:
+        return str(name)
+    return "OAK"
+
+
+def iter_available_devices(dai: Any) -> list[Any]:
+    """Enumerate devices using Bootloader API (preferred) or Device API."""
+    for source in (
+        getattr(dai, "DeviceBootloader", None),
+        getattr(dai, "Device", None),
+    ):
+        if source is None:
+            continue
+        getter = getattr(source, "getAllAvailableDevices", None)
+        if not callable(getter):
+            continue
+        try:
+            found = list(getter())
+            if found:
+                return found
+        except Exception as exc:
+            logger.debug("Device enumeration via %s failed: %s", source.__name__, exc)
+    return []
 
 
 def is_poe_protocol(protocol: str) -> bool:
@@ -41,15 +89,17 @@ def list_devices() -> list[dict[str, str]]:
     import depthai as dai
 
     devices: list[dict[str, str]] = []
-    for info in dai.Device.getAllAvailableDevices():
+    for info in iter_available_devices(dai):
         protocol = _protocol_name(info)
+        ip = device_ip(info) or ""
+        mxid = device_mxid(info)
         devices.append(
             {
-                "mxid": info.getMxId(),
-                "name": getattr(info, "name", "OAK"),
+                "mxid": mxid,
+                "name": device_display_name(info),
                 "protocol": protocol,
-                "ip": device_ip(info) or "",
-                "connection": "poe" if is_poe_protocol(protocol) else "usb",
+                "ip": ip,
+                "connection": "poe" if is_poe_protocol(protocol) or ip else "usb",
             }
         )
     return devices
@@ -77,6 +127,15 @@ def resolve_device_info(
 
     available = list_devices()
     if not available:
+        if prefer in ("poe", "auto") and not device_id:
+            fallback_ip = device_ip or DEFAULT_POE_CAMERA_IP
+            logger.info("No devices discovered — trying default PoE IP %s", fallback_ip)
+            return resolve_device_info(
+                dai,
+                device_id=device_id,
+                device_ip=fallback_ip,
+                prefer=prefer,
+            )
         raise RuntimeError(
             "No OAK device found. PoE: set host Ethernet to 169.254.1.10/16 "
             f"(camera usually {DEFAULT_POE_CAMERA_IP}). See docs/POE_SETUP.md"
