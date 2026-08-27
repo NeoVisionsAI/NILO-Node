@@ -81,6 +81,54 @@ link_up_benign() {
   return 1
 }
 
+derive_ap_mac() {
+  local sta="$1" mac o1 o2 o3 o4 o5 o6
+  mac="$(cat "/sys/class/net/${sta}/address" 2>/dev/null)" || return 1
+  IFS=: read -r o1 o2 o3 o4 o5 o6 <<< "${mac}"
+  o1=$(printf '%02x' $(( (0x${o1} | 0x02) & 0xfe )))
+  o6=$(printf '%02x' $(( (0x${o6} + 1) % 256 )))
+  printf '%s:%s:%s:%s:%s:%s\n' "$o1" "$o2" "$o3" "$o4" "$o5" "$o6"
+}
+
+phy_for_sta() {
+  local sta="$1"
+  iw dev "${sta}" info 2>/dev/null | awk '/wiphy/ { print "phy"$2; exit }'
+}
+
+detect_ap_iface() {
+  local sta="${1:-}"
+  iw dev 2>/dev/null | awk -v sta="${sta}" '
+    $1=="Interface" { n=$2; t="" }
+    $1=="type" {
+      t=$2
+      if (t=="AP" || t=="__ap") && n!=sta && n!="" { print n; exit }
+    }'
+}
+
+create_virtual_ap_iface() {
+  local sta="$1" ap="$2" ap_mac="$3" phy
+  phy="$(phy_for_sta "${sta}")"
+
+  # managed + unique MAC → hostapd promotes to AP (Arch Wiki / hostap list pattern)
+  if iw dev "${sta}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) on ${sta}"
+    return 0
+  fi
+  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) via ${phy}"
+    return 0
+  fi
+  if iw dev "${sta}" interface add "${ap}" type __ap addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) on ${sta}"
+    return 0
+  fi
+  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type __ap addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) via ${phy}"
+    return 0
+  fi
+  return 1
+}
+
 resolve_ap_name() {
   local sta="$1"
   local cfg="${2:-auto}"
@@ -96,14 +144,20 @@ cleanup_phy_ap_ifaces() {
   local name typ
   while read -r name typ; do
     [[ -z "${name}" || "${name}" == "${sta}" ]] && continue
-    if [[ "${typ}" == "AP" || "${typ}" == "__ap" ]]; then
-      log "Removing stale AP ${name}"
-      iw dev "${name}" del 2>/dev/null || true
+    case "${name}" in
+      *-ap|uap0|niloap0|ap0) ;;
+      *) continue ;;
+    esac
+    if [[ "${typ}" == "AP" || "${typ}" == "__ap" || "${typ}" == "managed" ]]; then
+      log "Removing stale virtual iface ${name} (${typ})"
+      ip link set "${name}" down 2>/dev/null || true
+      iw dev "${name}" del 2>/dev/null || ip link del "${name}" 2>/dev/null || true
     fi
   done < <(iw dev 2>/dev/null | awk '
     $1=="Interface"{n=$2; t=""}
     $1=="type"{t=$2; if (n!="") print n, t}')
   for ghost in "$(resolve_ap_name "${sta}" "${WIFI_AP_INTERFACE}")" "${sta}-ap" niloap0 uap0; do
+    ip link set "${ghost}" down 2>/dev/null || true
     ip link del "${ghost}" 2>/dev/null || iw dev "${ghost}" del 2>/dev/null || true
   done
   sleep 0.5
@@ -137,18 +191,19 @@ build_ssid() {
 
 ensure_ap_iface() {
   local sta="$1" ap_cfg="$2"
-  local ap try_names created=""
+  local ap try_names created="" ap_mac
   rfkill unblock wifi 2>/dev/null || true
   iw reg set "${WIFI_COUNTRY_CODE}" 2>/dev/null || true
   cleanup_phy_ap_ifaces "${sta}"
+
+  ap_mac="$(derive_ap_mac "${sta}")" || { warn "Could not derive AP MAC from ${sta}"; return 1; }
 
   try_names="$(resolve_ap_name "${sta}" "${ap_cfg}") ${sta}-ap niloap0 uap0"
   for ap in ${try_names}; do
     [[ "${ap}" == "${sta}" ]] && continue
     iw dev "${ap}" del 2>/dev/null || ip link del "${ap}" 2>/dev/null || true
     sleep 0.2
-    if iw dev "${sta}" interface add "${ap}" type __ap 2>/dev/null; then
-      log "Created virtual AP ${ap} on ${sta}"
+    if create_virtual_ap_iface "${sta}" "${ap}" "${ap_mac}"; then
       created="${ap}"
       break
     fi
@@ -173,14 +228,15 @@ ensure_ap_iface() {
     if command -v nmcli >/dev/null 2>&1; then
       nmcli device set "${ap}" managed no 2>/dev/null || true
     fi
-    # Leave DOWN until hostapd init (UP before hostapd → "Name not unique" on some drivers)
+    ip link set "${ap}" address "${ap_mac}" 2>/dev/null || true
     ip link set "${ap}" down 2>/dev/null || true
   fi
 }
 
 write_configs() {
-  local ap="$1" ssid="$2" pass="$3"
+  local ap="$1" ssid="$2" pass="$3" hw_mode="g"
   mkdir -p "${RUNTIME_DIR}" "${PID_DIR}"
+  [[ "${WIFI_CHANNEL}" -gt 14 ]] && hw_mode="a"
   cat > "${RUNTIME_DIR}/hostapd.conf" <<EOF
 interface=${ap}
 driver=nl80211
@@ -188,14 +244,13 @@ ssid=${ssid}
 channel=${WIFI_CHANNEL}
 country_code=${WIFI_COUNTRY_CODE}
 ieee80211d=1
-hw_mode=g
+hw_mode=${hw_mode}
 ieee80211n=1
 wmm_enabled=1
 auth_algs=1
 ignore_broadcast_ssid=0
 EOF
-  if [[ "${WIFI_CHANNEL}" -gt 14 ]]; then
-    sed -i 's/hw_mode=g/hw_mode=a/' "${RUNTIME_DIR}/hostapd.conf"
+  if [[ "${hw_mode}" == "a" ]]; then
     echo "ieee80211ac=1" >> "${RUNTIME_DIR}/hostapd.conf"
   fi
   if [[ -n "${pass}" ]]; then
@@ -240,9 +295,14 @@ start_ap() {
   sleep 0.3
 
   hostapd -B -P "${PID_DIR}/hostapd.pid" "${RUNTIME_DIR}/hostapd.conf"
-  sleep 0.5
+  sleep 1.0
 
-  link_up_benign "${ap}" || { warn "Could not bring ${ap} up after hostapd"; return 1; }
+  if ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
+    warn "hostapd exited immediately — check ${RUNTIME_DIR}/hostapd.conf"
+    return 1
+  fi
+
+  link_up_benign "${ap}" || true
   ip addr flush dev "${ap}" 2>/dev/null || true
   ip addr replace "${WIFI_AP_IP}/24" dev "${ap}" 2>/dev/null || true
 
@@ -272,10 +332,12 @@ stop_ap() {
 status_ap() {
   local sta ap
   sta="$(detect_sta_iface)"
-  ap="${WIFI_AP_INTERFACE}"
+  ap="$(detect_ap_iface "${sta}")"
+  [[ -z "${ap}" ]] && ap="${WIFI_AP_INTERFACE}"
+  [[ "${ap}" == "auto" ]] && ap="$(detect_ap_iface "${sta}")"
   echo "STA interface: ${sta:-?}"
-  echo "AP interface:  ${ap}"
-  if [[ -n "${ap}" ]] && iw dev "${ap}" info 2>/dev/null; then
+  echo "AP interface:  ${ap:-?}"
+  if [[ -n "${ap}" && "${ap}" != "auto" ]] && iw dev "${ap}" info 2>/dev/null; then
     echo ""
   fi
   pgrep -af 'hostapd|dnsmasq' 2>/dev/null | grep -E 'nilo|wifi-runtime' || echo "(no nilo hostapd/dnsmasq)"
