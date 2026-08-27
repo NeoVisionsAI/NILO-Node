@@ -101,7 +101,10 @@ detect_ap_iface() {
     $1=="Interface" { n=$2; t="" }
     $1=="type" {
       t=$2
-      if (t=="AP" || t=="__ap") && n!=sta && n!="" { print n; exit }
+      if ((t=="AP" || t=="__ap") && n != sta && n != "") {
+        print n
+        exit
+      }
     }'
 }
 
