@@ -21,6 +21,7 @@ from nilo_node.network.wifi_host import (
 )
 from nilo_node.network.wifi_prepare import (
     ApInterfacePlan,
+    channel_is_dfs,
     configure_ap_interface_ip,
     detect_operating_channel,
     ensure_concurrent_ap_ready,
@@ -427,6 +428,8 @@ class WifiApManager:
         ]
         if hw_mode == "a":
             lines.append("ieee80211ac=1")
+        if channel_is_dfs(channel):
+            lines.append("ieee80211h=1")
         if self._wifi.password:
             if len(self._wifi.password) < 8:
                 logger.warning(

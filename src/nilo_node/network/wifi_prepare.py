@@ -52,6 +52,17 @@ def hw_mode_for_channel(channel: int) -> str:
     return "g" if channel <= 14 else "a"
 
 
+def channel_is_dfs(channel: int) -> bool:
+    """True for 5 GHz DFS channels (EU/US); AP requires ieee80211h=1."""
+    if channel <= 14:
+        return False
+    if 52 <= channel <= 64:
+        return True
+    if 100 <= channel <= 140:
+        return True
+    return False
+
+
 def detect_sta_is_connected(sta_iface: str) -> bool:
     iw = shutil.which("iw")
     if not iw:

@@ -245,6 +245,14 @@ ensure_ap_iface() {
   fi
 }
 
+is_dfs_channel() {
+  local ch="$1"
+  [[ "${ch}" -le 14 ]] && return 1
+  if [[ "${ch}" -ge 52 && "${ch}" -le 64 ]]; then return 0; fi
+  if [[ "${ch}" -ge 100 && "${ch}" -le 140 ]]; then return 0; fi
+  return 1
+}
+
 write_configs() {
   local ap="$1" ssid="$2" pass="$3" hw_mode="g"
   mkdir -p "${RUNTIME_DIR}" "${PID_DIR}"
@@ -264,6 +272,10 @@ ignore_broadcast_ssid=0
 EOF
   if [[ "${hw_mode}" == "a" ]]; then
     echo "ieee80211ac=1" >> "${RUNTIME_DIR}/hostapd.conf"
+  fi
+  if is_dfs_channel "${WIFI_CHANNEL}"; then
+    echo "ieee80211h=1" >> "${RUNTIME_DIR}/hostapd.conf"
+    log "Canal ${WIFI_CHANNEL} es DFS — ieee80211h=1 (CAC radar ~60s al arrancar)"
   fi
   if [[ -n "${pass}" ]]; then
     cat >> "${RUNTIME_DIR}/hostapd.conf" <<EOF
@@ -306,11 +318,31 @@ start_ap() {
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
   sleep 0.3
 
-  hostapd -B -P "${PID_DIR}/hostapd.pid" "${RUNTIME_DIR}/hostapd.conf"
-  sleep 1.0
+  local hostapd_log="${RUNTIME_DIR}/hostapd.log"
+  rm -f "${hostapd_log}"
+  hostapd -B -P "${PID_DIR}/hostapd.pid" -f "${hostapd_log}" "${RUNTIME_DIR}/hostapd.conf"
+
+  if is_dfs_channel "${WIFI_CHANNEL}"; then
+    log "Esperando CAC DFS en canal ${WIFI_CHANNEL} (hasta 90s)..."
+    for _ in $(seq 1 90); do
+      pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1 || break
+      if iw dev "${ap}" info 2>/dev/null | grep -q 'type AP'; then
+        break
+      fi
+      sleep 1
+    done
+  else
+    sleep 1.0
+  fi
 
   if ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
-    warn "hostapd exited immediately — check ${RUNTIME_DIR}/hostapd.conf"
+    warn "hostapd exited — check ${RUNTIME_DIR}/hostapd.conf"
+    if is_dfs_channel "${WIFI_CHANNEL}"; then
+      warn "Canal ${WIFI_CHANNEL} es DFS/RADAR (5 GHz). Si el chipset no soporta AP+STA en DFS:"
+      warn "  → Conecta el mini PC al WiFi 2.4 GHz del router (p. ej. Movistar_2.4G)"
+      warn "  → O usa Ethernet para internet y AP dedicado en canal 6"
+    fi
+    [[ -f "${hostapd_log}" ]] && tail -20 "${hostapd_log}" >&2 || true
     return 1
   fi
 
@@ -353,12 +385,12 @@ status_ap() {
   echo "Runtime dir:   ${RUNTIME_DIR}"
   echo "STA interface: ${sta:-?}"
   echo "AP interface:  ${ap:-?} (expected: ${expected})"
-  echo "STA channel:   ${ch}"
+  echo "STA channel:   ${ch}$(is_dfs_channel "${ch}" && echo ' (DFS — requiere ieee80211h)')"
   if [[ -n "${ap}" && "${ap}" != "auto" ]] && iw dev "${ap}" info 2>/dev/null; then
     echo ""
   fi
   if [[ -f "${RUNTIME_DIR}/hostapd.conf" ]]; then
-    grep -E '^(interface|ssid|channel|hw_mode)=' "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
+    grep -E '^(interface|ssid|channel|hw_mode|ieee80211h)=' "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   else
     echo "(no hostapd.conf yet — run start)"
   fi

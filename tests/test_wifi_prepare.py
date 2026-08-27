@@ -8,6 +8,7 @@ import pytest
 
 from nilo_node.network.wifi_prepare import (
     ap_interface_candidates,
+    channel_is_dfs,
     freq_to_channel,
     plan_ap_interface,
     resolve_ap_interface_name,
@@ -26,6 +27,13 @@ def test_hw_mode_for_channel() -> None:
 
     assert hw_mode_for_channel(6) == "g"
     assert hw_mode_for_channel(108) == "a"
+
+
+def test_channel_is_dfs() -> None:
+    assert channel_is_dfs(108) is True
+    assert channel_is_dfs(36) is False
+    assert channel_is_dfs(6) is False
+    assert channel_is_dfs(52) is True
 
 
 def test_rtnetlink_benign() -> None:
