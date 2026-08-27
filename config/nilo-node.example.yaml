@@ -116,7 +116,7 @@ wifi:
   enabled: true                    # AP for setup portal + Cardmed (Ethernet = internet)
   ssid_prefix: "nilo-node"
   password: "${NILO_WIFI_PASSWORD}"
-  interface: "wlan0"
+  interface: "auto"                 # auto-detect wlp3s0 / wlan0 / etc.
   channel: 6
   country_code: "ES"
   mock_when_unavailable: true

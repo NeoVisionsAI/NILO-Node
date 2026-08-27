@@ -189,6 +189,15 @@ apply_poe_camera_config() {
   python3 "${patch}" "${config}"
 }
 
+apply_wifi_ap_config() {
+  local config="${NILO_INSTALL_DIR}/config/nilo-node.yaml"
+  local patch="${NILO_INSTALL_DIR}/scripts/patch_wifi_ap.py"
+  [[ -f "${config}" ]] || return 0
+  [[ -f "${patch}" ]] || { warn "patch_wifi_ap.py not found — skip WiFi AP patch"; return 0; }
+  log "Applying WiFi AP settings to ${config}..."
+  python3 "${patch}" "${config}"
+}
+
 ensure_env() {
   local env_file="${NILO_INSTALL_DIR}/.env"
   local example="${NILO_INSTALL_DIR}/deploy/env.example"
@@ -349,6 +358,7 @@ cmd_install() {
   setup_compose_file "${mode}"
   ensure_config
   apply_poe_camera_config
+  apply_wifi_ap_config
   ensure_env
   load_env
   compose_up "${mode}"
@@ -370,6 +380,7 @@ cmd_reload() {
   [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR}"
   setup_compose_file "${mode}"
   apply_poe_camera_config
+  apply_wifi_ap_config
   load_env
   compose_reload
   wait_healthy || true
@@ -390,6 +401,7 @@ cmd_update() {
 
   setup_compose_file "${mode}"
   apply_poe_camera_config
+  apply_wifi_ap_config
   load_env
   compose_update "${mode}"
   wait_healthy || true

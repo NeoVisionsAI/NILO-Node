@@ -150,7 +150,7 @@ class WifiConfig(BaseModel):
     enabled: bool = True
     ssid_prefix: str = "nilo-node"
     password: str = ""
-    interface: str = "wlan0"
+    interface: str = "auto"
     channel: int = 6
     country_code: str = "ES"
     mock_when_unavailable: bool = True

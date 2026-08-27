@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from nilo_node.config.models import AppConfig, WifiConfig
+from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,17 @@ class WifiApManager:
         self._mock = False
         self._error: str | None = None
         self._started = False
+        self._active_interface: str | None = None
+
+    def resolved_interface(self) -> str:
+        if self._active_interface:
+            return self._active_interface
+        return resolve_wifi_interface(self._wifi.interface)
+
+    def _resolve_and_bind_interface(self) -> str | None:
+        iface = detect_wifi_interface(self._wifi.interface)
+        self._active_interface = iface
+        return iface
 
     def ssid_for_node(self) -> str:
         short_id = self._node_id.replace("-", "")[:8]
@@ -54,7 +66,7 @@ class WifiApManager:
             running=running,
             mock=self._mock,
             ssid=self.ssid_for_node() if self._wifi.enabled else None,
-            interface=self._wifi.interface,
+            interface=self.resolved_interface() if self._wifi.enabled else self._wifi.interface,
             ap_ip=self._wifi.ap_ip,
             error=self._error,
         )
@@ -65,6 +77,17 @@ class WifiApManager:
 
         self._config_dir.mkdir(parents=True, exist_ok=True)
         ssid = self.ssid_for_node()
+
+        iface = self._resolve_and_bind_interface()
+        if iface is None:
+            self._error = "No WiFi interface found on host"
+            if self._wifi.mock_when_unavailable:
+                self._mock = True
+                self._started = True
+                logger.warning("WiFi AP mock mode — no wireless interface detected")
+                return
+            raise RuntimeError(self._error)
+
         self._write_hostapd_config(ssid)
         self._write_dnsmasq_config()
 
@@ -73,7 +96,7 @@ class WifiApManager:
             self._started = True
             logger.info(
                 "WiFi AP mock mode (interface %s unavailable): ssid=%s",
-                self._wifi.interface,
+                iface,
                 ssid,
             )
             return
@@ -82,7 +105,7 @@ class WifiApManager:
             await self._configure_interface()
             await self._start_processes()
             self._started = True
-            logger.info("WiFi AP started: ssid=%s interface=%s", ssid, self._wifi.interface)
+            logger.info("WiFi AP started: ssid=%s interface=%s", ssid, iface)
         except Exception as exc:
             self._error = str(exc)
             if self._wifi.mock_when_unavailable:
@@ -112,6 +135,7 @@ class WifiApManager:
         self._dnsmasq_proc = None
         self._started = False
         self._mock = False
+        self._active_interface = None
 
     async def restart(self) -> WifiApStatus:
         await self.stop()
@@ -129,7 +153,7 @@ class WifiApManager:
     async def _configure_interface(self) -> None:
         if not self._wifi.configure_interface_ip:
             return
-        iface = self._wifi.interface
+        iface = self._active_interface or self.resolved_interface()
         prefix = self._netmask_prefix()
         cidr = f"{self._wifi.ap_ip}/{prefix}"
         commands = [
@@ -150,12 +174,14 @@ class WifiApManager:
                 logger.debug("Interface flush skipped: %s", stderr.decode().strip())
 
     def _interface_available(self) -> bool:
-        return Path(f"/sys/class/net/{self._wifi.interface}").exists()
+        iface = self._active_interface or self.resolved_interface()
+        return Path(f"/sys/class/net/{iface}").exists()
 
     def _write_hostapd_config(self, ssid: str) -> None:
         path = self._config_dir / "hostapd.conf"
+        iface = self._active_interface or self.resolved_interface()
         lines = [
-            f"interface={self._wifi.interface}",
+            f"interface={iface}",
             "driver=nl80211",
             f"ssid={ssid}",
             f"channel={self._wifi.channel}",
@@ -177,7 +203,8 @@ class WifiApManager:
 
     def _write_dnsmasq_config(self) -> None:
         path = self._config_dir / "dnsmasq.conf"
-        content = f"""interface={self._wifi.interface}
+        iface = self._active_interface or self.resolved_interface()
+        content = f"""interface={iface}
 bind-interfaces
 dhcp-range={self._wifi.dhcp_range_start},{self._wifi.dhcp_range_end},{self._wifi.netmask},12h
 dhcp-option=3,{self._wifi.ap_ip}
