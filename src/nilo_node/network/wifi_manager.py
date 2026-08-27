@@ -18,6 +18,7 @@ from nilo_node.network.wifi_prepare import (
     detect_operating_channel,
     hw_mode_for_channel,
     plan_ap_interface,
+    pkill_pattern,
     teardown_virtual_ap,
     verify_ap_mode,
 )
@@ -219,28 +220,6 @@ class WifiApManager:
             raise RuntimeError(ap_error)
 
     async def _kill_ap_processes(self) -> None:
-        hostapd_conf = self._config_dir / "hostapd.conf"
-        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
-        if hostapd_conf.is_file():
-            proc = await asyncio.create_subprocess_exec(
-                "pkill",
-                "-f",
-                str(hostapd_conf),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-            await asyncio.sleep(0.2)
-        if dnsmasq_conf.is_file():
-            proc = await asyncio.create_subprocess_exec(
-                "pkill",
-                "-f",
-                str(dnsmasq_conf),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-            await asyncio.sleep(0.2)
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),
             (self._hostapd_proc, "hostapd"),
@@ -255,6 +234,13 @@ class WifiApManager:
                 logger.debug("Stopped %s", name)
         self._hostapd_proc = None
         self._dnsmasq_proc = None
+
+        hostapd_conf = self._config_dir / "hostapd.conf"
+        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
+        if hostapd_conf.is_file():
+            await pkill_pattern(str(hostapd_conf))
+        if dnsmasq_conf.is_file():
+            await pkill_pattern(str(dnsmasq_conf))
 
     async def stop(self) -> None:
         ap_iface = self._active_interface

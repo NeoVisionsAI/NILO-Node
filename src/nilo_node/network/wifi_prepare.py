@@ -151,10 +151,19 @@ async def _interface_type(iface: str) -> str | None:
     return None
 
 
+async def pkill_pattern(pattern: str) -> None:
+    """Kill processes matching pattern; no-op if pkill is not installed (minimal containers)."""
+    pkill = shutil.which("pkill")
+    if not pkill:
+        logger.debug("pkill not available — skipping %s", pattern)
+        return
+    await _run_cmd([pkill, "-f", pattern], optional=True)
+    await asyncio.sleep(0.2)
+
+
 async def _kill_nilo_hostapd(hostapd_conf: str = "/data/wifi/hostapd.conf") -> None:
     """Stop only NILO hostapd (by config path). Never pkill by interface name."""
-    await _run_cmd(["pkill", "-f", hostapd_conf], optional=True)
-    await asyncio.sleep(0.3)
+    await pkill_pattern(hostapd_conf)
 
 
 async def teardown_virtual_ap(ap_iface: str) -> None:
