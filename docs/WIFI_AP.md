@@ -17,6 +17,17 @@ Si el driver no soporta AP+STA, fallback automático a **modo dedicado** (AP en 
 - Scripts shell requieren **`NILO_WIFI_ALLOW_HOST_SCRIPTS=1`** — evita romper la WiFi del portátil por accidente.
 - **No ejecutar** `prepare-ap-interface.sh` ni `wifi-ap-run.sh` en el PC de desarrollo.
 
+## AP concurrente (Pi) vs dedicado (mini PC x86)
+
+| Hardware | `concurrent_sta_ap` | Comportamiento |
+|----------|---------------------|----------------|
+| **Raspberry Pi** (brcmfmac) | `true` | STA + AP en `uap0` a la vez (estilo NiloCardmed) |
+| **Mini PC x86** (Intel/Realtek) | `false` | AP solo en `wlp3s0`; internet por **Ethernet** |
+
+Muchas tarjetas x86 **crean `uap0`** pero **hostapd falla** en ella — es normal. Con `concurrent_sta_ap: false` (default en deploy) el AP va en la tarjeta física.
+
+Si dejas `concurrent_sta_ap: true`, NILO-Node **reintenta automáticamente** en modo dedicado si hostapd falla en `uap0`.
+
 ## Despliegue en el mini PC (un solo comando)
 
 ```bash

@@ -117,8 +117,8 @@ wifi:
   ssid_prefix: "nilo-node"
   password: "${NILO_WIFI_PASSWORD}"
   interface: "auto"                 # physical STA NIC (wlp3s0 / wlan0)
-  ap_interface: "uap0"              # virtual AP (NiloCardmed-style); "" = dedicated AP on interface
-  concurrent_sta_ap: true
+  ap_interface: "uap0"              # solo si concurrent_sta_ap: true (estilo Raspberry Pi)
+  concurrent_sta_ap: false            # mini PC x86: AP dedicado; la Pi puede usar true
   hardware_ap: true                 # MUST stay true on mini PC; false on dev laptops
   backend: "container"
   host_script_path: "/host/scripts/wifi/wifi-ap-run.sh"

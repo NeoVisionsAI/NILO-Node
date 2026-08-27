@@ -14,6 +14,7 @@ from nilo_node.config.models import AppConfig, WifiConfig
 from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
 from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_script
 from nilo_node.network.wifi_prepare import (
+    ApInterfacePlan,
     detect_operating_channel,
     plan_ap_interface,
     teardown_virtual_ap,
@@ -135,33 +136,15 @@ class WifiApManager:
             return
 
         try:
-            plan = await plan_ap_interface(
-                iface,
-                self._wifi.ap_interface,
-                concurrent_sta_ap=self._wifi.concurrent_sta_ap,
-                country_code=self._wifi.country_code,
-                ap_ip=self._wifi.ap_ip,
-                netmask_prefix=self._netmask_prefix(),
-                default_channel=self._wifi.channel,
-            )
-            self._sta_interface = plan.sta_interface
-            self._active_interface = plan.ap_interface
-            self._ap_mode = plan.mode
-            self._hostapd_channel = plan.channel
-            self._write_hostapd_config(ssid)
-            self._write_dnsmasq_config()
-            await self._start_processes()
-            await asyncio.sleep(1.0)
-            ap_error = await verify_ap_mode(plan.ap_interface)
-            if ap_error:
-                raise RuntimeError(ap_error)
+            await self._attempt_start_ap(iface, ssid, concurrent=self._wifi.concurrent_sta_ap)
             self._started = True
+            self._error = None
             logger.info(
                 "WiFi AP started: ssid=%s mode=%s sta=%s ap=%s",
                 ssid,
-                plan.mode,
-                plan.sta_interface,
-                plan.ap_interface,
+                self._ap_mode,
+                self._sta_interface,
+                self._active_interface,
             )
         except Exception as exc:
             self._error = str(exc)
@@ -173,14 +156,56 @@ class WifiApManager:
                 logger.error("WiFi AP failed to start: %s", exc)
                 raise
 
-    async def stop(self) -> None:
-        if not self._started:
-            return
-        ap_iface = self._active_interface
-        sta_iface = self._sta_interface
-        ap_mode = self._ap_mode
-        if self._backend == "host":
-            await self._stop_via_host_script()
+    async def _attempt_start_ap(self, sta_iface: str, ssid: str, *, concurrent: bool) -> None:
+        plan = await plan_ap_interface(
+            sta_iface,
+            self._wifi.ap_interface,
+            concurrent_sta_ap=concurrent,
+            country_code=self._wifi.country_code,
+            ap_ip=self._wifi.ap_ip,
+            netmask_prefix=self._netmask_prefix(),
+            default_channel=self._wifi.channel,
+        )
+        try:
+            await self._apply_ap_plan(ssid, plan)
+        except Exception as exc:
+            if concurrent and plan.mode == "concurrent":
+                logger.warning(
+                    "AP+STA concurrente no soportado (%s) — reintentando AP dedicado en %s",
+                    exc,
+                    sta_iface,
+                )
+                await self._kill_ap_processes()
+                if self._wifi.ap_interface:
+                    await teardown_virtual_ap(self._wifi.ap_interface)
+                plan = await plan_ap_interface(
+                    sta_iface,
+                    self._wifi.ap_interface,
+                    concurrent_sta_ap=False,
+                    country_code=self._wifi.country_code,
+                    ap_ip=self._wifi.ap_ip,
+                    netmask_prefix=self._netmask_prefix(),
+                    default_channel=self._wifi.channel,
+                )
+                await self._apply_ap_plan(ssid, plan)
+            else:
+                raise
+
+    async def _apply_ap_plan(self, ssid: str, plan: ApInterfacePlan) -> None:
+        self._sta_interface = plan.sta_interface
+        self._active_interface = plan.ap_interface
+        self._ap_mode = plan.mode
+        self._hostapd_channel = plan.channel
+        self._write_hostapd_config(ssid)
+        self._write_dnsmasq_config()
+        await self._kill_ap_processes()
+        await self._start_processes()
+        await asyncio.sleep(1.0)
+        ap_error = await verify_ap_mode(plan.ap_interface)
+        if ap_error:
+            raise RuntimeError(ap_error)
+
+    async def _kill_ap_processes(self) -> None:
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),
             (self._hostapd_proc, "hostapd"),
@@ -195,6 +220,16 @@ class WifiApManager:
                 logger.debug("Stopped %s", name)
         self._hostapd_proc = None
         self._dnsmasq_proc = None
+
+    async def stop(self) -> None:
+        if not self._started:
+            return
+        ap_iface = self._active_interface
+        sta_iface = self._sta_interface
+        ap_mode = self._ap_mode
+        if self._backend == "host":
+            await self._stop_via_host_script()
+        await self._kill_ap_processes()
         if (
             ap_mode == "concurrent"
             and ap_iface
@@ -317,8 +352,16 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
         if not self._binary_available("dnsmasq"):
             raise RuntimeError("dnsmasq binary not found")
 
+        hostapd_log = self._config_dir / "hostapd.log"
+        try:
+            hostapd_log.unlink(missing_ok=True)
+        except OSError:
+            pass
+
         self._hostapd_proc = await asyncio.create_subprocess_exec(
             "hostapd",
+            "-f",
+            str(hostapd_log),
             str(hostapd_conf),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -327,6 +370,12 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
         if self._hostapd_proc.returncode is not None:
             stderr = await self._hostapd_proc.stderr.read() if self._hostapd_proc.stderr else b""
             detail = stderr.decode(errors="replace").strip()
+            if hostapd_log.is_file():
+                log_tail = hostapd_log.read_text(encoding="utf-8", errors="replace").strip()
+                if log_tail:
+                    detail = detail or log_tail.splitlines()[-1]
+                    if len(log_tail) > 200:
+                        detail = f"{detail}\n{log_tail[-800:]}"
             if not detail:
                 detail = f"hostapd exited (code {self._hostapd_proc.returncode})"
             raise RuntimeError(
