@@ -59,19 +59,26 @@ detect_sta_iface() {
 }
 
 detect_sta_channel() {
-  local sta="$1"
-  local ch freq
-  ch="$(iw dev "${sta}" link 2>/dev/null | awk '/^channel/ {print $2; exit}')"
+  local sta="$1" ch
+  ch="$(iw dev "${sta}" link 2>/dev/null | awk '
+    /^[[:space:]]*channel/ { print $2; exit }
+    /freq:/ {
+      f = $2 + 0
+      if (f >= 5170) { print int((f - 5000) / 5); exit }
+      if (f >= 2412) { print int((f - 2412) / 5) + 1; exit }
+    }')"
   if [[ -n "${ch}" ]]; then
     echo "${ch}"
     return
   fi
-  freq="$(iw dev "${sta}" link 2>/dev/null | awk '/freq:/ {print $2; exit}')"
-  if [[ -n "${freq}" && "${freq}" -ge 5170 ]]; then
-    echo $(( (freq - 5000) / 5 ))
-    return
-  fi
   echo "${WIFI_CHANNEL}"
+}
+
+link_up_benign() {
+  local iface="$1"
+  ip link set "${iface}" up 2>/dev/null && return 0
+  ip -br link show "${iface}" 2>/dev/null | grep -qE '(UP|UNKNOWN)' && return 0
+  return 1
 }
 
 resolve_ap_name() {
@@ -166,7 +173,8 @@ ensure_ap_iface() {
     if command -v nmcli >/dev/null 2>&1; then
       nmcli device set "${ap}" managed no 2>/dev/null || true
     fi
-    ip link set "${ap}" up 2>/dev/null || true
+    # Leave DOWN until hostapd init (UP before hostapd → "Name not unique" on some drivers)
+    ip link set "${ap}" down 2>/dev/null || true
   fi
 }
 
@@ -227,15 +235,17 @@ start_ap() {
   ap="${WIFI_AP_INTERFACE}"
   write_configs "${ap}" "${ssid}" "${pass}"
 
-  ip link set "${ap}" up
-  ip addr flush dev "${ap}" 2>/dev/null || true
-  ip addr replace "${WIFI_AP_IP}/24" dev "${ap}" 2>/dev/null || true
-
   pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
   sleep 0.3
 
   hostapd -B -P "${PID_DIR}/hostapd.pid" "${RUNTIME_DIR}/hostapd.conf"
+  sleep 0.5
+
+  link_up_benign "${ap}" || { warn "Could not bring ${ap} up after hostapd"; return 1; }
+  ip addr flush dev "${ap}" 2>/dev/null || true
+  ip addr replace "${WIFI_AP_IP}/24" dev "${ap}" 2>/dev/null || true
+
   dnsmasq --conf-file="${RUNTIME_DIR}/dnsmasq.conf" --pid-file="${PID_DIR}/dnsmasq.pid" -k &
   sleep 0.5
 
@@ -248,9 +258,14 @@ start_ap() {
 }
 
 stop_ap() {
+  local sta
   pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
   rm -f "${PID_DIR}/hostapd.pid" "${PID_DIR}/dnsmasq.pid"
+  sta="$(detect_sta_iface)"
+  if [[ -n "${sta}" ]]; then
+    cleanup_phy_ap_ifaces "${sta}"
+  fi
   log "AP stopped"
 }
 
