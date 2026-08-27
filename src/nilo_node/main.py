@@ -198,7 +198,20 @@ async def run_async(config_path: str | None = None) -> None:
         config, repo, node_id, physiology_store, backend
     )
     wifi_manager = WifiApManager(config, storage_base, node_id)
-    await wifi_manager.start()
+
+    async def _start_wifi_ap() -> None:
+        """Start AP after API is up; never block or crash the orchestrator."""
+        await asyncio.sleep(2)
+        try:
+            await asyncio.wait_for(wifi_manager.start(), timeout=90.0)
+        except asyncio.TimeoutError:
+            logger.error("WiFi AP start timed out after 90s — API stays up")
+            wifi_manager._error = "start timed out"
+            if wifi_manager._wifi.mock_when_unavailable:
+                wifi_manager._mock = True
+                wifi_manager._started = True
+        except Exception as exc:
+            logger.error("WiFi AP background start failed: %s", exc)
 
     settings_applier = SettingsApplier(
         config,
@@ -310,9 +323,10 @@ async def run_async(config_path: str | None = None) -> None:
         )
     )
     api_task = asyncio.create_task(server.serve())
+    wifi_task = asyncio.create_task(_start_wifi_ap())
 
     try:
-        await asyncio.gather(config_task, schedule_task, retention_task, api_task)
+        await asyncio.gather(config_task, schedule_task, retention_task, api_task, wifi_task)
     finally:
         await mqtt_service.stop()
         await wifi_manager.stop()

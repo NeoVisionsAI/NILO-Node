@@ -151,14 +151,9 @@ async def _interface_type(iface: str) -> str | None:
     return None
 
 
-async def _kill_hostapd_for_interface(ap_iface: str) -> None:
-    """Stop hostapd processes that may still hold the virtual AP interface."""
-    for pattern in (
-        f"interface={ap_iface}",
-        f"dev {ap_iface} ",
-        ap_iface,
-    ):
-        await _run_cmd(["pkill", "-f", pattern], optional=True)
+async def _kill_nilo_hostapd(hostapd_conf: str = "/data/wifi/hostapd.conf") -> None:
+    """Stop only NILO hostapd (by config path). Never pkill by interface name."""
+    await _run_cmd(["pkill", "-f", hostapd_conf], optional=True)
     await asyncio.sleep(0.3)
 
 
@@ -167,7 +162,7 @@ async def teardown_virtual_ap(ap_iface: str) -> None:
     iw = shutil.which("iw")
     if not iw or not await _interface_exists(ap_iface):
         return
-    await _kill_hostapd_for_interface(ap_iface)
+    await _kill_nilo_hostapd()
     ip_cmd = shutil.which("ip")
     if ip_cmd:
         await _run_cmd([ip_cmd, "link", "set", ap_iface, "down"], optional=True)

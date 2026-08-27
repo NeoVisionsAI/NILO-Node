@@ -14,11 +14,11 @@ WIFI_AP = {
     "interface": "auto",
     "ap_interface": "uap0",
     "concurrent_sta_ap": True,
-    "hardware_ap": True,
     "backend": "container",
     "mock_when_unavailable": True,
     "configure_interface_ip": True,
 }
+# hardware_ap is intentionally omitted — set true on mini PC, false on dev laptops.
 
 
 def apply_wifi_ap(config_path: Path) -> None:
@@ -35,6 +35,11 @@ def apply_wifi_ap(config_path: Path) -> None:
         if wifi.get(key) != value:
             wifi[key] = value
             changed.append(key)
+
+    # Mini PC default when unset; never override explicit dev safety (hardware_ap: false).
+    if wifi.get("hardware_ap") is None:
+        wifi["hardware_ap"] = True
+        changed.append("hardware_ap")
 
     if not changed:
         print(f"[patch-config] WiFi AP settings already applied: {config_path}")

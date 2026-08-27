@@ -220,23 +220,26 @@ class WifiApManager:
 
     async def _kill_ap_processes(self) -> None:
         hostapd_conf = self._config_dir / "hostapd.conf"
+        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
         if hostapd_conf.is_file():
-            await asyncio.create_subprocess_exec(
+            proc = await asyncio.create_subprocess_exec(
                 "pkill",
                 "-f",
                 str(hostapd_conf),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            await proc.wait()
             await asyncio.sleep(0.2)
-        if self._active_interface:
-            await asyncio.create_subprocess_exec(
+        if dnsmasq_conf.is_file():
+            proc = await asyncio.create_subprocess_exec(
                 "pkill",
                 "-f",
-                f"interface={self._active_interface}",
+                str(dnsmasq_conf),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            await proc.wait()
             await asyncio.sleep(0.2)
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),

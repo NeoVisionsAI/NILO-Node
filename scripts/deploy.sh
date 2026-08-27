@@ -196,11 +196,23 @@ apply_wifi_ap_config() {
   local patch="${NILO_INSTALL_DIR}/scripts/patch_wifi_ap.py"
   [[ -f "${config}" ]] || return 0
   [[ -f "${patch}" ]] || { warn "patch_wifi_ap.py not found — skip WiFi AP patch"; return 0; }
+  if ! wifi_ap_backend >/dev/null 2>&1; then
+    if python3 - "${config}" <<'PY' 2>/dev/null
+import sys, yaml
+wifi = (yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}).get("wifi") or {}
+sys.exit(0 if wifi.get("hardware_ap") is False else 1)
+PY
+    then
+      log "WiFi AP omitido (hardware_ap=false — seguro en portátiles de desarrollo)"
+      return 0
+    fi
+  fi
   log "Applying WiFi AP settings to ${config}..."
   python3 "${patch}" "${config}"
 }
 
 ensure_wifi_ap_host() {
+  wifi_ap_backend >/dev/null 2>&1 || return 0
   local script="${NILO_INSTALL_DIR}/scripts/wifi/ensure-wifi-ap.sh"
   if [[ ! -f "${script}" ]]; then
     script="${SOURCE_REPO_ROOT}/scripts/wifi/ensure-wifi-ap.sh"
@@ -581,15 +593,21 @@ cmd_install() {
   prepare_wifi_ap_interface
   ensure_env_secrets
   load_env
-  cleanup_stale_uap0
+  if wifi_ap_backend >/dev/null 2>&1; then
+    cleanup_stale_uap0
+  fi
   compose_up "${mode}"
 
   if [[ "${INSTALL_SYSTEMD}" == "1" ]]; then
     install_systemd_unit
   fi
 
-  wait_healthy || true
-  restart_wifi_ap || true
+  wait_healthy || health_ok=0
+  if [[ "${health_ok:-1}" == "1" ]]; then
+    restart_wifi_ap || true
+  else
+    warn "API no responde — omitiendo reinicio WiFi. Diagnóstico: sudo $0 logs"
+  fi
   print_wifi_summary || true
   log "Install complete. Install dir: ${NILO_INSTALL_DIR}"
   log "API token in: ${NILO_INSTALL_DIR}/.env (NILO_LOCAL_API_TOKEN)"
@@ -609,8 +627,12 @@ cmd_reload() {
   ensure_env_secrets
   load_env
   compose_reload
-  wait_healthy || true
-  restart_wifi_ap || true
+  wait_healthy || health_ok=0
+  if [[ "${health_ok:-1}" == "1" ]]; then
+    restart_wifi_ap || true
+  else
+    warn "API no responde — omitiendo reinicio WiFi. Diagnóstico: sudo $0 logs"
+  fi
   print_wifi_summary || true
   log "Reload complete (no image rebuild)."
 }
@@ -634,10 +656,16 @@ cmd_update() {
   prepare_wifi_ap_interface
   ensure_env_secrets
   load_env
-  cleanup_stale_uap0
+  if wifi_ap_backend >/dev/null 2>&1; then
+    cleanup_stale_uap0
+  fi
   compose_update "${mode}"
-  wait_healthy || true
-  restart_wifi_ap || true
+  wait_healthy || health_ok=0
+  if [[ "${health_ok:-1}" == "1" ]]; then
+    restart_wifi_ap || true
+  else
+    warn "API no responde — omitiendo reinicio WiFi. Diagnóstico: sudo $0 logs"
+  fi
   print_wifi_summary || true
   log "Update complete."
 }
