@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,14 +153,46 @@ async def _interface_type(iface: str) -> str | None:
     return None
 
 
+def find_pids_by_cmdline(pattern: str) -> list[int]:
+    """Find process PIDs whose cmdline contains pattern (works without pkill)."""
+    pids: list[int] = []
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return pids
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        text = raw.replace(b"\0", b" ").decode(errors="replace")
+        if pattern in text:
+            pids.append(int(entry.name))
+    return pids
+
+
+async def kill_processes_by_cmdline(pattern: str) -> None:
+    """Terminate processes matching cmdline; SIGKILL survivors."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in find_pids_by_cmdline(pattern):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                logger.debug("No permission to signal pid %d", pid)
+        if sig == signal.SIGTERM:
+            await asyncio.sleep(0.4)
+
+
 async def pkill_pattern(pattern: str) -> None:
-    """Kill processes matching pattern; no-op if pkill is not installed (minimal containers)."""
+    """Kill processes matching pattern; uses /proc scan, pkill optional."""
+    await kill_processes_by_cmdline(pattern)
     pkill = shutil.which("pkill")
-    if not pkill:
-        logger.debug("pkill not available — skipping %s", pattern)
-        return
-    await _run_cmd([pkill, "-f", pattern], optional=True)
-    await asyncio.sleep(0.2)
+    if pkill:
+        await _run_cmd([pkill, "-f", pattern], optional=True)
+        await asyncio.sleep(0.2)
 
 
 async def _kill_nilo_hostapd(hostapd_conf: str = "/data/wifi/hostapd.conf") -> None:
@@ -301,10 +335,29 @@ async def configure_ap_interface_ip(ap_iface: str, ap_ip: str, prefix: int) -> N
         [ip_cmd, "link", "set", ap_iface, "down"],
         [ip_cmd, "addr", "flush", "dev", ap_iface],
         [ip_cmd, "addr", "replace", cidr, "dev", ap_iface],
+        [ip_cmd, "link", "set", ap_iface, "up"],
     ):
         _, err = await _run_cmd(cmd, optional=True)
         if err and not rtnetlink_error_is_benign(err):
             logger.debug("AP IP setup (%s): %s", " ".join(cmd[2:]), err)
+
+
+async def ensure_concurrent_ap_ready(
+    sta_iface: str,
+    ap_iface: str,
+    *,
+    ap_ip: str,
+    netmask_prefix: int,
+    hostapd_conf: str,
+) -> None:
+    """Reset virtual AP immediately before hostapd (matches working host script flow)."""
+    await kill_processes_by_cmdline(hostapd_conf)
+    await teardown_virtual_ap(ap_iface)
+    await asyncio.sleep(1.0)
+    if not await _create_virtual_ap(sta_iface, ap_iface):
+        raise RuntimeError(f"Could not create virtual AP {ap_iface} on {sta_iface}")
+    await release_wifi_from_network_manager(ap_iface, disconnect=False)
+    await configure_ap_interface_ip(ap_iface, ap_ip, netmask_prefix)
 
 
 async def plan_ap_interface(
