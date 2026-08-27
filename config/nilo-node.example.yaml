@@ -113,7 +113,7 @@ replication:
       method: "copy"
 
 wifi:
-  enabled: false
+  enabled: true                    # AP for setup portal + Cardmed (Ethernet = internet)
   ssid_prefix: "nilo-node"
   password: "${NILO_WIFI_PASSWORD}"
   interface: "wlan0"
@@ -123,6 +123,21 @@ wifi:
   ap_ip: "192.168.50.1"
   dhcp_range_start: "192.168.50.10"
   dhcp_range_end: "192.168.50.100"
+  configure_interface_ip: true
+
+mqtt:
+  enabled: true
+  broker_host: "nilomed.eu"
+  broker_port: 8883
+  username: "${NILO_MQTT_USERNAME}"
+  password: "${NILO_MQTT_PASSWORD}"
+  use_tls: true
+  topic_template: "nilo/node/{node_id}"
+  events_topic_template: "nilo/node/{node_id}/events"
+  require_message_token: true
+  reconnect_interval_sec: 10
+  qos: 1
+  mock_when_unavailable: true
 
 cardmed:
   max_upload_size_mb: 10
@@ -144,6 +159,9 @@ local_api:
   host: "0.0.0.0"
   port: 8080
   auth_token: "${NILO_LOCAL_API_TOKEN}"
+  setup_enabled: true
+  setup_username: "${NILO_SETUP_USERNAME}"
+  setup_password: "${NILO_SETUP_PASSWORD}"
 
 logging:
   level: "INFO"

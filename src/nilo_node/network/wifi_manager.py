@@ -79,6 +79,7 @@ class WifiApManager:
             return
 
         try:
+            await self._configure_interface()
             await self._start_processes()
             self._started = True
             logger.info("WiFi AP started: ssid=%s interface=%s", ssid, self._wifi.interface)
@@ -111,6 +112,42 @@ class WifiApManager:
         self._dnsmasq_proc = None
         self._started = False
         self._mock = False
+
+    async def restart(self) -> WifiApStatus:
+        await self.stop()
+        self._error = None
+        await self.start()
+        return self.get_status()
+
+    def _netmask_prefix(self) -> int:
+        parts = self._wifi.netmask.split(".")
+        if len(parts) != 4:
+            return 24
+        binary = "".join(f"{int(p):08b}" for p in parts)
+        return binary.count("1")
+
+    async def _configure_interface(self) -> None:
+        if not self._wifi.configure_interface_ip:
+            return
+        iface = self._wifi.interface
+        prefix = self._netmask_prefix()
+        cidr = f"{self._wifi.ap_ip}/{prefix}"
+        commands = [
+            ["ip", "link", "set", iface, "up"],
+            ["ip", "addr", "flush", "dev", iface, "label", iface],
+            ["ip", "addr", "add", cidr, "dev", iface],
+        ]
+        for cmd in commands:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0 and cmd[1] != "addr":
+                raise RuntimeError(stderr.decode() or f"Failed: {' '.join(cmd)}")
+            if proc.returncode != 0 and cmd[1] == "addr" and cmd[2] == "flush":
+                logger.debug("Interface flush skipped: %s", stderr.decode().strip())
 
     def _interface_available(self) -> bool:
         return Path(f"/sys/class/net/{self._wifi.interface}").exists()

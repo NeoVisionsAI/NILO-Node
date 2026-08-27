@@ -21,6 +21,10 @@ services:
       - /dev/snd:/dev/snd
     environment:
       - NILO_CONFIG_PATH=/etc/nilo-node/nilo-node.yaml
+      - NILO_MQTT_USERNAME=${NILO_MQTT_USERNAME:-}
+      - NILO_MQTT_PASSWORD=${NILO_MQTT_PASSWORD:-}
+      - NILO_SETUP_USERNAME=${NILO_SETUP_USERNAME:-admin}
+      - NILO_SETUP_PASSWORD=${NILO_SETUP_PASSWORD:-}
       - NILO_BACKEND_API_KEY
       - NILO_BACKEND_CLIENT_ID
       - NILO_BACKEND_CLIENT_SECRET

@@ -147,7 +147,7 @@ class BluetoothConfig(BaseModel):
 
 
 class WifiConfig(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     ssid_prefix: str = "nilo-node"
     password: str = ""
     interface: str = "wlan0"
@@ -158,12 +158,32 @@ class WifiConfig(BaseModel):
     dhcp_range_end: str = "192.168.50.100"
     ap_ip: str = "192.168.50.1"
     netmask: str = "255.255.255.0"
+    # Ethernet stays on DHCP/static for internet; AP is isolated on wlan0.
+    configure_interface_ip: bool = True
+
+
+class MqttConfig(BaseModel):
+    enabled: bool = False
+    broker_host: str = "nilomed.eu"
+    broker_port: int = 8883
+    username: str = ""
+    password: str = ""
+    use_tls: bool = True
+    topic_template: str = "nilo/node/{node_id}"
+    events_topic_template: str = "nilo/node/{node_id}/events"
+    require_message_token: bool = True
+    reconnect_interval_sec: int = 10
+    qos: int = 1
+    mock_when_unavailable: bool = True
 
 
 class LocalApiConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
     auth_token: str = ""
+    setup_enabled: bool = True
+    setup_username: str = ""
+    setup_password: str = ""
 
 
 class LoggingConfig(BaseModel):
@@ -185,6 +205,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     replication: ReplicationConfig = Field(default_factory=ReplicationConfig)
     wifi: WifiConfig = Field(default_factory=WifiConfig)
+    mqtt: MqttConfig = Field(default_factory=MqttConfig)
     cardmed: CardmedConfig = Field(default_factory=CardmedConfig)
     bluetooth: BluetoothConfig = Field(default_factory=BluetoothConfig)
     local_api: LocalApiConfig = Field(default_factory=LocalApiConfig)

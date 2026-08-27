@@ -24,6 +24,10 @@ services:
       - NILO_BACKEND_CLIENT_SECRET
       - NILO_WIFI_PASSWORD
       - NILO_LOCAL_API_TOKEN
+      - NILO_SETUP_USERNAME
+      - NILO_SETUP_PASSWORD
+      - NILO_MQTT_USERNAME
+      - NILO_MQTT_PASSWORD
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s

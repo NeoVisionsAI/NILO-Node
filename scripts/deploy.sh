@@ -204,18 +204,32 @@ ensure_env() {
     touch "${env_file}"
   fi
 
-  local token wifi
+  local token wifi setup_user setup_pass
   token="$(gen_secret)"
   wifi="$(gen_secret)"
+  setup_user="${NILO_SETUP_USERNAME:-admin}"
+  setup_pass="$(gen_secret)"
 
   if [[ "${NONINTERACTIVE}" == "1" ]]; then
     sed -i "s/^NILO_LOCAL_API_TOKEN=.*/NILO_LOCAL_API_TOKEN=${token}/" "${env_file}"
     sed -i "s/^NILO_WIFI_PASSWORD=.*/NILO_WIFI_PASSWORD=${wifi}/" "${env_file}"
-    log "Generated NILO_LOCAL_API_TOKEN and NILO_WIFI_PASSWORD in ${env_file}"
+    if grep -q '^NILO_SETUP_USERNAME=' "${env_file}"; then
+      sed -i "s/^NILO_SETUP_USERNAME=.*/NILO_SETUP_USERNAME=${setup_user}/" "${env_file}"
+    else
+      echo "NILO_SETUP_USERNAME=${setup_user}" >> "${env_file}"
+    fi
+    if grep -q '^NILO_SETUP_PASSWORD=' "${env_file}"; then
+      sed -i "s/^NILO_SETUP_PASSWORD=.*/NILO_SETUP_PASSWORD=${setup_pass}/" "${env_file}"
+    else
+      echo "NILO_SETUP_PASSWORD=${setup_pass}" >> "${env_file}"
+    fi
+    log "Generated API token, WiFi password, setup user/password in ${env_file}"
   else
     warn "Edit ${env_file} and set at least:"
     warn "  NILO_LOCAL_API_TOKEN (e.g. ${token})"
     warn "  NILO_WIFI_PASSWORD   (e.g. ${wifi})"
+    warn "  NILO_SETUP_USERNAME  (e.g. ${setup_user})"
+    warn "  NILO_SETUP_PASSWORD  (e.g. ${setup_pass})"
     warn "  NILO_BACKEND_*       (when backend is configured)"
   fi
 }

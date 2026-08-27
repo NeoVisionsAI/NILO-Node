@@ -1,0 +1,75 @@
+"""Apply runtime settings to live services and nilo-node.yaml."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from nilo_node.bluetooth.manager import BluetoothManager
+from nilo_node.camera.manager import CameraManager
+from nilo_node.config.models import AppConfig, CameraConfig
+from nilo_node.config.persistence import patch_camera_section, patch_wifi_section
+from nilo_node.config.runtime_store import RuntimeSettings
+from nilo_node.network.wifi_manager import WifiApManager
+
+logger = logging.getLogger(__name__)
+
+
+class SettingsApplier:
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: Path,
+        *,
+        camera: CameraManager,
+        wifi: WifiApManager,
+        bluetooth: BluetoothManager,
+    ) -> None:
+        self._config = config
+        self._config_path = config_path
+        self._camera = camera
+        self._wifi = wifi
+        self._bluetooth = bluetooth
+
+    async def apply(self, settings: RuntimeSettings) -> dict[str, Any]:
+        applied: dict[str, Any] = {}
+
+        if settings.camera:
+            if self._config_path.is_file():
+                camera_cfg = patch_camera_section(self._config_path, settings.camera)
+            else:
+                merged = self._config.camera.model_dump()
+                merged.update(settings.camera)
+                camera_cfg = CameraConfig.model_validate(merged)
+            self._camera.apply_config(camera_cfg)
+            self._config.camera = camera_cfg
+            applied["camera"] = settings.camera
+
+        if settings.wifi:
+            if self._config_path.is_file():
+                patch_wifi_section(self._config_path, settings.wifi)
+            for key, value in settings.wifi.items():
+                if hasattr(self._wifi._wifi, key):
+                    setattr(self._wifi._wifi, key, value)
+            if settings.wifi.get("enabled", self._config.wifi.enabled):
+                status = await self._wifi.restart()
+                applied["wifi"] = status.model_dump(mode="json")
+            else:
+                await self._wifi.stop()
+                applied["wifi"] = self._wifi.get_status().model_dump(mode="json")
+
+        if settings.bluetooth:
+            for key, value in settings.bluetooth.items():
+                if hasattr(self._bluetooth._config.bluetooth, key):
+                    setattr(self._bluetooth._config.bluetooth, key, value)
+            applied["bluetooth"] = settings.bluetooth
+
+        if settings.mqtt:
+            for key, value in settings.mqtt.items():
+                if hasattr(self._config.mqtt, key):
+                    setattr(self._config.mqtt, key, value)
+            applied["mqtt"] = settings.mqtt
+
+        logger.info("Applied runtime settings: %s", list(applied.keys()))
+        return applied

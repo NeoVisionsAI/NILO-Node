@@ -22,8 +22,12 @@ from nilo_node.cardmed.service import CardmedService
 from nilo_node.chunks.coordinator import ChunkCoordinator
 from nilo_node.chunks.recovery import ChunkRecoveryService
 from nilo_node.config.loader import load_config
+from nilo_node.config.applier import SettingsApplier
+from nilo_node.config.runtime_store import RuntimeSettingsStore
 from nilo_node.config.models import AppConfig
 from nilo_node.health.reporter import HealthReporter
+from nilo_node.mqtt.handlers import wire_mqtt_handlers
+from nilo_node.mqtt.service import MqttService
 from nilo_node.monitoring.controller import CampaignController
 from nilo_node.network.wifi_manager import WifiApManager
 from nilo_node.monitoring.models import (
@@ -169,6 +173,9 @@ async def run_async(config_path: str | None = None) -> None:
     db.migrate()
     repo = StateRepository(db)
 
+    settings_store = RuntimeSettingsStore(db, storage_base)
+    config_path = Path(path)
+
     camera_manager = CameraManager(config)
     init_camera_manager(camera_manager)
 
@@ -192,6 +199,36 @@ async def run_async(config_path: str | None = None) -> None:
     )
     wifi_manager = WifiApManager(config, storage_base, node_id)
     await wifi_manager.start()
+
+    settings_applier = SettingsApplier(
+        config,
+        config_path,
+        camera=camera_manager,
+        wifi=wifi_manager,
+        bluetooth=bluetooth_manager,
+    )
+    saved_settings = settings_store.load()
+    if any(
+        [
+            saved_settings.camera,
+            saved_settings.wifi,
+            saved_settings.bluetooth,
+            saved_settings.mqtt,
+        ]
+    ):
+        await settings_applier.apply(saved_settings)
+        logger.info("Applied persisted runtime settings from database")
+
+    mqtt_service = MqttService(config, node_id)
+    wire_mqtt_handlers(
+        mqtt_service,
+        camera=camera_manager,
+        bluetooth=bluetooth_manager,
+        wifi=wifi_manager,
+        settings_store=settings_store,
+        settings_applier=settings_applier,
+    )
+    await mqtt_service.start()
 
     storage_manager = StorageManager(
         config, repo, paths, enabled_target_ids=enabled_replication_target_ids(config)
@@ -259,6 +296,10 @@ async def run_async(config_path: str | None = None) -> None:
         bluetooth_manager,
         backend,
         upload_queue,
+        mqtt_service=mqtt_service,
+        config_path=path,
+        settings_store=settings_store,
+        settings_applier=settings_applier,
     )
     server = uvicorn.Server(
         uvicorn.Config(
@@ -273,6 +314,7 @@ async def run_async(config_path: str | None = None) -> None:
     try:
         await asyncio.gather(config_task, schedule_task, retention_task, api_task)
     finally:
+        await mqtt_service.stop()
         await wifi_manager.stop()
         await bluetooth_manager.stop()
         await health.stop()

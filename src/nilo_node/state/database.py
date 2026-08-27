@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS: list[str] = [
     """
@@ -162,6 +162,13 @@ MIGRATIONS: list[str] = [
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_upload_queue_status ON upload_queue(status);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS runtime_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+    );
     """,
 ]
 

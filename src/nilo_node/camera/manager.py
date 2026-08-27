@@ -72,6 +72,58 @@ class CameraManager:
     def _build_pipeline_for_connect(self, use_depthai: bool):
         return build_pipeline(use_depthai=use_depthai, camera_cfg=self._camera_cfg)
 
+    def apply_config(self, camera_cfg: CameraConfig) -> None:
+        """Apply updated camera settings (e.g. from setup API)."""
+        self._camera_cfg = camera_cfg
+        self._capture_flags = CaptureFlags(
+            rgb=camera_cfg.defaults.rgb_enabled,
+            tof=camera_cfg.defaults.tof_enabled,
+            pose=camera_cfg.defaults.pose_enabled,
+        )
+
+    async def get_preview_jpeg(self) -> bytes | None:
+        from nilo_node.camera.models import CameraConnectionState
+
+        if self._state != CameraConnectionState.CONNECTED:
+            return None
+
+        pipeline = self._pipeline
+        if hasattr(pipeline, "_session") and pipeline._session is not None and not getattr(
+            pipeline, "_use_synthetic", True
+        ):
+            bundle = await asyncio.to_thread(pipeline._session.poll)
+            if bundle is not None and bundle.rgb is not None:
+                try:
+                    import cv2
+
+                    ok, jpeg = cv2.imencode(".jpg", bundle.rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if ok:
+                        return jpeg.tobytes()
+                except ImportError:
+                    pass
+
+        if self._pipeline.mode == "mock":
+            try:
+                import cv2
+                import numpy as np
+
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(
+                    frame,
+                    "Mock camera preview",
+                    (40, 240),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (200, 200, 200),
+                    2,
+                )
+                ok, jpeg = cv2.imencode(".jpg", frame)
+                if ok:
+                    return jpeg.tobytes()
+            except ImportError:
+                return None
+        return None
+
     def _use_depthai(self, devices: list[CameraDeviceInfo]) -> bool:
         return should_use_depthai_hardware(
             depthai_ok=depthai_available(),

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NILO-Node · Configuración</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="login-screen" class="login-wrap">
+    <div class="login-card">
+      <div class="brand">
+        <div class="brand-icon">N</div>
+        <div>
+          <h1>NILO-Node</h1>
+          <p>Portal de configuración local</p>
+        </div>
+      </div>
+      <p class="hint">Conéctate al WiFi del nodo e inicia sesión.</p>
+      <form id="login-form">
+        <label>
+          <span>Usuario</span>
+          <input id="username" type="text" autocomplete="username" placeholder="admin" required />
+        </label>
+        <label>
+          <span>Contraseña</span>
+          <input id="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
+        </label>
+        <button type="submit" class="btn primary full">Entrar</button>
+      </form>
+      <p id="login-error" class="toast error hidden"></p>
+    </div>
+  </div>
+
+  <div id="app" class="layout hidden">
+    <aside class="sidebar">
+      <div class="brand compact">
+        <div class="brand-icon sm">N</div>
+        <span>NILO-Node</span>
+      </div>
+      <nav>
+        <button data-tab="dashboard" class="nav-item active"><span class="ico">◉</span> Panel</button>
+        <button data-tab="wifi" class="nav-item"><span class="ico">⌂</span> WiFi</button>
+        <button data-tab="camera" class="nav-item"><span class="ico">▣</span> Cámara</button>
+        <button data-tab="bluetooth" class="nav-item"><span class="ico">♫</span> Bluetooth</button>
+        <button data-tab="mqtt" class="nav-item"><span class="ico">⇄</span> MQTT</button>
+      </nav>
+      <div class="sidebar-foot">
+        <small id="node-id"></small>
+        <button id="logout-btn" class="btn ghost full">Cerrar sesión</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <h2 id="page-title">Panel</h2>
+        <div id="toast" class="toast hidden"></div>
+      </header>
+
+      <section id="tab-dashboard" class="page">
+        <div id="dashboard-cards" class="grid stats"></div>
+        <div class="card">
+          <h3>Accesos rápidos</h3>
+          <div class="quick-actions">
+            <button class="btn secondary" data-goto="camera">Configurar cámara</button>
+            <button class="btn secondary" data-goto="wifi">Ver WiFi</button>
+            <button class="btn secondary" id="dash-refresh">Actualizar</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-wifi" class="page hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Estado del AP</h3>
+            <div id="wifi-status" class="kv"></div>
+            <button id="wifi-restart" class="btn primary">Reiniciar WiFi</button>
+          </div>
+          <div class="card">
+            <h3>Configuración WiFi</h3>
+            <form id="wifi-form" class="form">
+              <label>Prefijo SSID <input name="ssid_prefix" type="text" /></label>
+              <label>Contraseña WiFi <input name="password" type="password" autocomplete="new-password" /></label>
+              <label>Canal <input name="channel" type="number" min="1" max="13" /></label>
+              <button type="submit" class="btn primary">Guardar y aplicar</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-camera" class="page hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Vista en vivo</h3>
+            <div class="preview-wrap">
+              <img id="cam-preview" alt="Vista previa" />
+              <div id="cam-preview-placeholder" class="preview-ph">Sin señal — conecta la cámara</div>
+            </div>
+            <div class="row">
+              <button id="cam-discover" class="btn secondary">Detectar</button>
+              <button id="cam-connect" class="btn primary">Conectar</button>
+              <button id="cam-disconnect" class="btn ghost">Desconectar</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Parámetros OAK (PoE)</h3>
+            <form id="camera-form" class="form">
+              <label>IP cámara <input name="device_ip" type="text" placeholder="169.254.1.222" /></label>
+              <label>Modo
+                <select name="connection_mode">
+                  <option value="poe">PoE</option>
+                  <option value="usb">USB</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </label>
+              <label>FPS RGB <input name="rgb_fps" type="number" min="1" max="60" /></label>
+              <label>FPS ToF <input name="tof_fps" type="number" min="1" max="60" /></label>
+              <label>Pose backend
+                <select name="pose_backend">
+                  <option value="mediapipe">MediaPipe</option>
+                  <option value="yolo">YOLO</option>
+                </select>
+              </label>
+              <label class="check"><input name="auto_connect" type="checkbox" /> Auto-conectar al arrancar</label>
+              <button type="submit" class="btn primary">Guardar y aplicar</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Estado</h3>
+          <pre id="cam-status" class="code"></pre>
+        </div>
+      </section>
+
+      <section id="tab-bluetooth" class="page hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Dispositivos</h3>
+            <button id="bt-discover" class="btn primary">Escanear</button>
+            <ul id="bt-list" class="device-list"></ul>
+          </div>
+          <div class="card">
+            <h3>Preferencias</h3>
+            <form id="bt-form" class="form">
+              <label class="check"><input name="default_record_on_connect" type="checkbox" /> Grabar al conectar</label>
+              <label>Timeout escaneo (s) <input name="scan_timeout_sec" type="number" min="3" max="120" /></label>
+              <button type="submit" class="btn primary">Guardar</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-mqtt" class="page hidden">
+        <div class="card">
+          <h3>Estado MQTT</h3>
+          <pre id="mqtt-info" class="code"></pre>
+        </div>
+        <div class="card">
+          <h3>Configuración broker</h3>
+          <form id="mqtt-form" class="form">
+            <label class="check"><input name="enabled" type="checkbox" /> Habilitado</label>
+            <label>Host <input name="broker_host" type="text" placeholder="nilomed.eu" /></label>
+            <label>Puerto <input name="broker_port" type="number" /></label>
+            <label>Usuario <input name="username" type="text" autocomplete="off" /></label>
+            <label>Contraseña <input name="password" type="password" autocomplete="new-password" /></label>
+            <button type="submit" class="btn primary">Guardar (requiere reinicio manual)</button>
+          </form>
+        </div>
+        <div class="card">
+          <h3>Ejemplo comando remoto</h3>
+          <pre id="mqtt-example" class="code"></pre>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
