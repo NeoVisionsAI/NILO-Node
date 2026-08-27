@@ -24,7 +24,7 @@ ENV_FILE="${INSTALL_DIR}/.env"
 PID_DIR="/run/nilo-node-wifi"
 
 WIFI_STA_INTERFACE="${WIFI_STA_INTERFACE:-}"
-WIFI_AP_INTERFACE="${WIFI_AP_INTERFACE:-uap0}"
+WIFI_AP_INTERFACE="${WIFI_AP_INTERFACE:-auto}"
 WIFI_AP_IP="${WIFI_AP_IP:-192.168.50.1}"
 WIFI_COUNTRY_CODE="${WIFI_COUNTRY_CODE:-ES}"
 DHCP_START="${WIFI_DHCP_START:-192.168.50.10}"
@@ -50,7 +50,56 @@ detect_sta_iface() {
     echo "${WIFI_STA_INTERFACE}"
     return
   fi
-  iw dev 2>/dev/null | awk '$1=="Interface"{print $2; exit}'
+  iw dev 2>/dev/null | awk '
+    $1=="Interface" {
+      n=$2
+      if (n ~ /^uap/ || n ~ /-ap$/ || n == "niloap0" || n == "ap0") next
+      print n; exit
+    }'
+}
+
+detect_sta_channel() {
+  local sta="$1"
+  local ch freq
+  ch="$(iw dev "${sta}" link 2>/dev/null | awk '/^channel/ {print $2; exit}')"
+  if [[ -n "${ch}" ]]; then
+    echo "${ch}"
+    return
+  fi
+  freq="$(iw dev "${sta}" link 2>/dev/null | awk '/freq:/ {print $2; exit}')"
+  if [[ -n "${freq}" && "${freq}" -ge 5170 ]]; then
+    echo $(( (freq - 5000) / 5 ))
+    return
+  fi
+  echo "${WIFI_CHANNEL}"
+}
+
+resolve_ap_name() {
+  local sta="$1"
+  local cfg="${2:-auto}"
+  if [[ -z "${cfg}" || "${cfg}" == "auto" ]]; then
+    echo "${sta}-ap"
+  else
+    echo "${cfg}"
+  fi
+}
+
+cleanup_phy_ap_ifaces() {
+  local sta="$1"
+  local name typ
+  while read -r name typ; do
+    [[ -z "${name}" || "${name}" == "${sta}" ]] && continue
+    if [[ "${typ}" == "AP" || "${typ}" == "__ap" ]]; then
+      log "Removing stale AP ${name}"
+      iw dev "${name}" del 2>/dev/null || true
+    fi
+  done < <(iw dev 2>/dev/null | awk '
+    $1=="Interface"{n=$2; t=""}
+    $1=="type"{t=$2; if (n!="") print n, t}')
+  for ghost in "$(resolve_ap_name "${sta}" "${WIFI_AP_INTERFACE}")" "${sta}-ap" niloap0 uap0; do
+    ip link del "${ghost}" 2>/dev/null || iw dev "${ghost}" del 2>/dev/null || true
+  done
+  sleep 0.5
 }
 
 get_node_id() {
@@ -80,21 +129,28 @@ build_ssid() {
 }
 
 ensure_ap_iface() {
-  local sta="$1" ap="$2"
+  local sta="$1" ap_cfg="$2"
+  local ap try_names created=""
   rfkill unblock wifi 2>/dev/null || true
   iw reg set "${WIFI_COUNTRY_CODE}" 2>/dev/null || true
+  cleanup_phy_ap_ifaces "${sta}"
 
-  if ip link show "${ap}" &>/dev/null; then
-    iw dev "${ap}" del 2>/dev/null || true
-    sleep 0.5
-  fi
+  try_names="$(resolve_ap_name "${sta}" "${ap_cfg}") ${sta}-ap niloap0 uap0"
+  for ap in ${try_names}; do
+    [[ "${ap}" == "${sta}" ]] && continue
+    iw dev "${ap}" del 2>/dev/null || ip link del "${ap}" 2>/dev/null || true
+    sleep 0.2
+    if iw dev "${sta}" interface add "${ap}" type __ap 2>/dev/null; then
+      log "Created virtual AP ${ap} on ${sta}"
+      created="${ap}"
+      break
+    fi
+  done
 
-  if [[ "${ap}" != "${sta}" ]] && iw dev "${sta}" interface add "${ap}" type __ap 2>/dev/null; then
-    log "Created virtual AP ${ap} on ${sta}"
+  if [[ -n "${created}" ]]; then
     AP_MODE="concurrent"
-  elif ip link show "${ap}" &>/dev/null; then
-    log "Virtual AP ${ap} already exists — reusing"
-    AP_MODE="concurrent"
+    WIFI_AP_INTERFACE="${created}"
+    ap="${created}"
   else
     warn "Virtual AP not supported — dedicated mode on ${sta}"
     AP_MODE="dedicated"
@@ -130,6 +186,10 @@ wmm_enabled=1
 auth_algs=1
 ignore_broadcast_ssid=0
 EOF
+  if [[ "${WIFI_CHANNEL}" -gt 14 ]]; then
+    sed -i 's/hw_mode=g/hw_mode=a/' "${RUNTIME_DIR}/hostapd.conf"
+    echo "ieee80211ac=1" >> "${RUNTIME_DIR}/hostapd.conf"
+  fi
   if [[ -n "${pass}" ]]; then
     cat >> "${RUNTIME_DIR}/hostapd.conf" <<EOF
 wpa=2
@@ -161,6 +221,7 @@ start_ap() {
   ap="${WIFI_AP_INTERFACE}"
   ssid="$(build_ssid)"
   pass="${NILO_WIFI_PASSWORD:-}"
+  WIFI_CHANNEL="$(detect_sta_channel "${sta}")"
 
   ensure_ap_iface "${sta}" "${ap}"
   ap="${WIFI_AP_INTERFACE}"

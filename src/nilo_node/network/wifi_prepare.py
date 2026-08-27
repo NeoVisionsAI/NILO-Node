@@ -195,6 +195,85 @@ async def pkill_pattern(pattern: str) -> None:
         await asyncio.sleep(0.2)
 
 
+def resolve_ap_interface_name(sta_iface: str, configured: str) -> str:
+    """Primary virtual AP name (avoid poisoned uap0 — use {sta}-ap by default)."""
+    name = (configured or "").strip()
+    if not name or name.lower() == "auto":
+        return f"{sta_iface}-ap"
+    return name
+
+
+def ap_interface_candidates(sta_iface: str, configured: str) -> list[str]:
+    """Names to try when creating virtual AP (driver may reject uap0 after failed attempts)."""
+    ordered = [
+        resolve_ap_interface_name(sta_iface, configured),
+        f"{sta_iface}-ap",
+        "niloap0",
+        "uap0",
+    ]
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in ordered:
+        if name and name != sta_iface and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _parse_iw_dev(text: str) -> list[dict[str, str | None]]:
+    interfaces: list[dict[str, str | None]] = []
+    current: dict[str, str | None] = {}
+    current_phy: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("phy#"):
+            current_phy = stripped.split("#", 1)[-1]
+        elif stripped.startswith("Interface "):
+            if current:
+                interfaces.append(current)
+            current = {"phy": current_phy, "name": stripped.split()[1], "type": None}
+        elif stripped.startswith("type ") and current:
+            current["type"] = stripped.split()[1]
+    if current:
+        interfaces.append(current)
+    return interfaces
+
+
+async def force_remove_iface(name: str) -> None:
+    """Best-effort remove interface by name (handles half-deleted / ghost names)."""
+    ip_cmd = shutil.which("ip")
+    iw = shutil.which("iw")
+    if ip_cmd:
+        await _run_cmd([ip_cmd, "link", "set", name, "down"], optional=True)
+        await _run_cmd([ip_cmd, "link", "delete", name, "type", "wlan"], optional=True)
+        await _run_cmd([ip_cmd, "link", "delete", name], optional=True)
+    if iw:
+        await _run_cmd([iw, "dev", name, "del"], optional=True)
+
+
+async def cleanup_phy_ap_interfaces(sta_iface: str) -> None:
+    """Remove all AP virtual interfaces on the STA phy (driver allows only one)."""
+    iw = shutil.which("iw")
+    if not iw:
+        return
+    sta_phy = await _phy_name(sta_iface)
+    code, text = await _run_cmd([iw, "dev"], optional=True)
+    if code != 0:
+        return
+    for iface in _parse_iw_dev(text):
+        name = iface.get("name")
+        if not name or name == sta_iface:
+            continue
+        if sta_phy and iface.get("phy") != sta_phy:
+            continue
+        if iface.get("type") in ("AP", "__ap"):
+            logger.info("Removing stale AP interface %s (phy %s)", name, sta_phy)
+            await teardown_virtual_ap(name)
+    for ghost in ap_interface_candidates(sta_iface, "auto"):
+        await force_remove_iface(ghost)
+    await asyncio.sleep(0.5)
+
+
 async def _kill_nilo_hostapd(hostapd_conf: str = "/data/wifi/hostapd.conf") -> None:
     """Stop only NILO hostapd (by config path). Never pkill by interface name."""
     await pkill_pattern(hostapd_conf)
@@ -202,24 +281,27 @@ async def _kill_nilo_hostapd(hostapd_conf: str = "/data/wifi/hostapd.conf") -> N
 
 async def teardown_virtual_ap(ap_iface: str) -> None:
     """Remove virtual AP interface (safe if missing)."""
-    iw = shutil.which("iw")
-    if not iw or not await _interface_exists(ap_iface):
-        return
     await _kill_nilo_hostapd()
+    if not await _interface_exists(ap_iface):
+        await force_remove_iface(ap_iface)
+        return
     ip_cmd = shutil.which("ip")
     if ip_cmd:
         await _run_cmd([ip_cmd, "link", "set", ap_iface, "down"], optional=True)
         await _run_cmd([ip_cmd, "addr", "flush", "dev", ap_iface], optional=True)
-    logger.info("Removing virtual AP interface %s", ap_iface)
-    for attempt in range(3):
-        code, text = await _run_cmd([iw, "dev", ap_iface, "del"], optional=True)
-        if code == 0 or not await _interface_exists(ap_iface):
-            break
-        if attempt < 2:
-            await asyncio.sleep(0.5)
-        elif text:
-            logger.warning("Could not delete %s: %s", ap_iface, text)
-    await asyncio.sleep(0.5)
+    iw = shutil.which("iw")
+    if iw:
+        logger.info("Removing virtual AP interface %s", ap_iface)
+        for attempt in range(3):
+            code, text = await _run_cmd([iw, "dev", ap_iface, "del"], optional=True)
+            if code == 0 or not await _interface_exists(ap_iface):
+                break
+            if attempt < 2:
+                await asyncio.sleep(0.5)
+            elif text:
+                logger.warning("Could not delete %s: %s", ap_iface, text)
+    await force_remove_iface(ap_iface)
+    await asyncio.sleep(0.3)
 
 
 async def release_wifi_from_network_manager(
@@ -250,55 +332,58 @@ async def _phy_name(sta_iface: str) -> str | None:
     return None
 
 
-async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
+async def _create_virtual_ap_once(sta_iface: str, ap_iface: str) -> tuple[bool, str]:
     iw = shutil.which("iw")
     if not iw:
-        return False
-
-    if await _interface_exists(ap_iface):
-        iface_type = await _interface_type(ap_iface)
-        if iface_type in ("AP", "__ap"):
-            logger.info("Replacing existing virtual AP %s before hostapd", ap_iface)
-            await teardown_virtual_ap(ap_iface)
-        else:
-            logger.warning(
-                "Virtual AP %s exists but type is %s — recreating",
-                ap_iface,
-                iface_type or "unknown",
-            )
-            await teardown_virtual_ap(ap_iface)
+        return False, "iw not found"
 
     async def _try_add(args: list[str]) -> tuple[int, str]:
-        return await _run_cmd([iw, *args, "interface", "add", ap_iface, "type", "__ap"], optional=True)
+        return await _run_cmd(
+            [iw, *args, "interface", "add", ap_iface, "type", "__ap"],
+            optional=True,
+        )
 
     code, text = await _try_add(["dev", sta_iface])
     if code == 0:
         logger.info("Created virtual AP %s on %s", ap_iface, sta_iface)
-        return True
+        return True, text
 
     phy = await _phy_name(sta_iface)
     if phy:
         code, text = await _try_add([phy])
         if code == 0:
             logger.info("Created virtual AP %s via %s", ap_iface, phy)
-            return True
+            return True, text
 
-    if rtnetlink_error_is_benign(text):
-        await asyncio.sleep(0.5)
-        if await _interface_exists(ap_iface):
-            iface_type = await _interface_type(ap_iface)
+    return False, text
+
+
+async def create_virtual_ap(sta_iface: str, configured_ap: str) -> str | None:
+    """Create virtual AP; try several names if uap0 is poisoned in the driver."""
+    await cleanup_phy_ap_interfaces(sta_iface)
+    last_error = ""
+    for ap_name in ap_interface_candidates(sta_iface, configured_ap):
+        await teardown_virtual_ap(ap_name)
+        await force_remove_iface(ap_name)
+        await asyncio.sleep(0.3)
+        ok, err = await _create_virtual_ap_once(sta_iface, ap_name)
+        if ok and await _interface_exists(ap_name):
+            iface_type = await _interface_type(ap_name)
             if iface_type in ("AP", "__ap"):
-                logger.info("Virtual AP %s present after RTNETLINK conflict — reusing", ap_iface)
-                return True
-        await teardown_virtual_ap(ap_iface)
-        await asyncio.sleep(0.5)
-        code2, text2 = await _try_add(["dev", sta_iface])
-        if code2 == 0 or await _interface_exists(ap_iface):
-            return True
-        text = text2 or text
-
-    logger.warning("Virtual AP %s on %s unavailable: %s", ap_iface, sta_iface, text)
-    return False
+                logger.info("Using virtual AP interface %s", ap_name)
+                return ap_name
+        last_error = err
+        if rtnetlink_error_is_benign(err):
+            logger.warning("Virtual AP %s rejected (%s) — trying next name", ap_name, err)
+        else:
+            logger.warning("Virtual AP %s failed: %s", ap_name, err)
+    logger.error(
+        "Could not create virtual AP on %s (tried %s). Last: %s. Reboot may be required.",
+        sta_iface,
+        ap_interface_candidates(sta_iface, configured_ap),
+        last_error,
+    )
+    return None
 
 
 async def prepare_dedicated_ap(sta_iface: str) -> None:
@@ -349,15 +434,19 @@ async def ensure_concurrent_ap_ready(
     ap_ip: str,
     netmask_prefix: int,
     hostapd_conf: str,
-) -> None:
-    """Prepare uap0 exactly like scripts/wifi/wifi-ap-run.sh before hostapd -B."""
+) -> str:
+    """Prepare virtual AP before hostapd -B; returns the interface name actually created."""
     await kill_processes_by_cmdline(hostapd_conf)
-    await teardown_virtual_ap(ap_iface)
-    await asyncio.sleep(0.5)
-    if not await _create_virtual_ap(sta_iface, ap_iface):
-        raise RuntimeError(f"Could not create virtual AP {ap_iface} on {sta_iface}")
-    await release_wifi_from_network_manager(ap_iface, disconnect=False)
-    await configure_ap_interface_ip(ap_iface, ap_ip, netmask_prefix)
+    created = await create_virtual_ap(sta_iface, ap_iface)
+    if not created:
+        raise RuntimeError(
+            f"Could not create virtual AP on {sta_iface} "
+            f"(tried {ap_interface_candidates(sta_iface, ap_iface)}). "
+            "Reboot the mini PC if the name is stuck."
+        )
+    await release_wifi_from_network_manager(created, disconnect=False)
+    await configure_ap_interface_ip(created, ap_ip, netmask_prefix)
+    return created
 
 
 async def plan_ap_interface(
@@ -380,27 +469,20 @@ async def plan_ap_interface(
 
     channel = detect_operating_channel(sta_iface) or default_channel
     hw_mode = hw_mode_for_channel(channel)
-    ap_name = (ap_iface or "").strip()
+    ap_name = resolve_ap_interface_name(sta_iface, ap_iface)
     sta_connected = detect_sta_is_connected(sta_iface)
     use_concurrent = concurrent_sta_ap or (
         sta_connected and ap_name and ap_name != sta_iface
     )
     if sta_connected and not concurrent_sta_ap and use_concurrent:
         logger.info(
-            "STA connected on %s — auto-using concurrent AP on %s (same channel %d)",
+            "STA connected on %s — auto-using concurrent AP (same channel %d)",
             sta_iface,
-            ap_name,
             channel,
         )
 
     if use_concurrent and ap_name and ap_name != sta_iface:
-        await teardown_virtual_ap(ap_name)
-        if await _create_virtual_ap(sta_iface, ap_name):
-            await release_wifi_from_network_manager(ap_name, disconnect=False)
-            await configure_ap_interface_ip(ap_name, ap_ip, netmask_prefix)
-            return ApInterfacePlan(
-                sta_iface, ap_name, "concurrent", channel, hw_mode
-            )
+        return ApInterfacePlan(sta_iface, ap_name, "concurrent", channel, hw_mode)
 
     logger.info("Using dedicated AP on %s", sta_iface)
     await prepare_dedicated_ap(sta_iface)

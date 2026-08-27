@@ -12,7 +12,7 @@ import yaml
 WIFI_AP = {
     "enabled": True,
     "interface": "auto",
-    "ap_interface": "uap0",
+    "ap_interface": "auto",
     "concurrent_sta_ap": True,
     "backend": "container",
     "mock_when_unavailable": True,

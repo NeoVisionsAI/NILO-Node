@@ -221,24 +221,25 @@ class WifiApManager:
         self._ap_mode = plan.mode
         self._hostapd_channel = plan.channel
         self._hostapd_hw_mode = plan.hw_mode
-        self._write_hostapd_config(ssid)
-        self._write_dnsmasq_config()
         await self._kill_ap_processes()
         hostapd_conf = str(self._config_dir / "hostapd.conf")
         if (
             plan.mode == "concurrent"
             and plan.ap_interface != plan.sta_interface
         ):
-            await ensure_concurrent_ap_ready(
+            actual_ap = await ensure_concurrent_ap_ready(
                 plan.sta_interface,
                 plan.ap_interface,
                 ap_ip=self._wifi.ap_ip,
                 netmask_prefix=self._netmask_prefix(),
                 hostapd_conf=hostapd_conf,
             )
+            self._active_interface = actual_ap
+        self._write_hostapd_config(ssid)
+        self._write_dnsmasq_config()
         await self._start_processes()
         await asyncio.sleep(1.0)
-        ap_error = await verify_ap_mode(plan.ap_interface)
+        ap_error = await verify_ap_mode(self._active_interface or plan.ap_interface)
         if ap_error:
             raise RuntimeError(ap_error)
 

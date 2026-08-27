@@ -117,7 +117,7 @@ wifi:
   ssid_prefix: "nilo-node"
   password: "${NILO_WIFI_PASSWORD}"
   interface: "auto"                 # physical STA NIC (wlp3s0 / wlan0)
-  ap_interface: "uap0"              # solo si concurrent_sta_ap: true (estilo Raspberry Pi)
+  ap_interface: "auto"              # virtual AP: wlp3s0-ap (not uap0 — evita nombres bloqueados)
   concurrent_sta_ap: true             # uap0 + mismo canal que STA (#channels <= 1)
   hardware_ap: true                 # MUST stay true on mini PC; false on dev laptops
   backend: "container"
