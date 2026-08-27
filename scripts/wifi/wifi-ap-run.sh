@@ -253,16 +253,36 @@ is_dfs_channel() {
   return 1
 }
 
+sta_link_freq_mhz() {
+  local sta="$1"
+  iw dev "${sta}" link 2>/dev/null | awk '/freq:/ { print int($2 + 0); exit }'
+}
+
 print_dfs_workaround() {
   local ch="$1"
   is_dfs_channel "${ch}" || return 0
-  warn "Canal ${ch} = 5 GHz DFS. Muchos chipsets NO permiten AP+STA en DFS."
-  warn "Solución A (recomendada): conecta el mini PC al WiFi 2.4 GHz del router:"
-  warn "  nmcli dev wifi list | grep -i movistar"
-  warn "  nmcli dev wifi connect \"NOMBRE_2.4G\" password \"TU_CLAVE\""
+  local freq
+  freq="$(sta_link_freq_mhz "$(detect_sta_iface)")"
+  warn "Canal ${ch} (${freq:+"~${freq} MHz "}5 GHz DFS). Este chipset no pasa CAC DFS (start_dfs_cac -1)."
+  warn "Solución A: conecta el mini PC al WiFi 2.4 GHz del router (freq 2412–2484 MHz):"
+  warn "  nmcli -f SSID,FREQ,SIGNAL dev wifi list | awk '\$2>=2412 && \$2<=2484'"
+  warn "  sudo nmcli dev wifi connect \"SSID_2.4G\" password \"TU_CLAVE\""
+  warn "  iw dev wlp3s0 link   # freq debe ser ~2437, no 5540"
   warn "  sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
-  warn "Solución B (Ethernet): cable de red + AP dedicado 2.4 GHz:"
+  warn "Solución B (Ethernet): cable + AP dedicado 2.4 GHz:"
   warn "  sudo WIFI_DEDICATED_AP=1 NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
+}
+
+abort_if_sta_on_dfs() {
+  local sta="$1" ch freq
+  [[ "${WIFI_DEDICATED_AP:-0}" == "1" ]] && return 0
+  [[ "${WIFI_ALLOW_DFS:-0}" == "1" ]] && return 0
+  ch="$(detect_sta_channel "${sta}")"
+  is_dfs_channel "${ch}" || return 0
+  freq="$(sta_link_freq_mhz "${sta}")"
+  warn "STA ${sta} en ${freq:+"${freq} MHz / "}canal ${ch} (5 GHz DFS) — AP+STA concurrente no viable aquí."
+  print_dfs_workaround "${ch}"
+  return 1
 }
 
 prepare_dedicated_ap() {
@@ -332,6 +352,7 @@ start_ap() {
   local sta ssid pass ap
   sta="$(detect_sta_iface)"
   [[ -n "${sta}" ]] || { warn "No WiFi STA interface"; return 1; }
+  abort_if_sta_on_dfs "${sta}" || return 1
   ap="${WIFI_AP_INTERFACE}"
   ssid="$(build_ssid)"
   pass="${NILO_WIFI_PASSWORD:-}"
@@ -421,11 +442,16 @@ status_ap() {
   ap="$(detect_ap_iface "${sta}")"
   [[ -z "${ap}" ]] && ap="${expected}"
   ch="$(detect_sta_channel "${sta}")"
+  freq="$(sta_link_freq_mhz "${sta}")"
   echo "Install dir:   ${INSTALL_DIR}"
   echo "Runtime dir:   ${RUNTIME_DIR}"
   echo "STA interface: ${sta:-?}"
   echo "AP interface:  ${ap:-?} (expected: ${expected})"
-  echo "STA channel:   ${ch}$(is_dfs_channel "${ch}" && echo ' (DFS — requiere ieee80211h)')"
+  if [[ -n "${freq}" ]]; then
+    echo "STA link:      ${freq} MHz, canal ${ch}$(is_dfs_channel "${ch}" && echo ' (5 GHz DFS — usa WiFi 2.4 GHz o Ethernet)')"
+  else
+    echo "STA channel:   ${ch}"
+  fi
   if [[ -n "${ap}" && "${ap}" != "auto" ]] && iw dev "${ap}" info 2>/dev/null; then
     echo ""
   fi
