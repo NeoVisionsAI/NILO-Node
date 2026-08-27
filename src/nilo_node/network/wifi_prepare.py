@@ -123,6 +123,20 @@ async def release_wifi_from_network_manager(
     await _run_cmd([nmcli, "device", "set", iface, "managed", "no"], optional=True)
 
 
+async def _phy_name(sta_iface: str) -> str | None:
+    iw = shutil.which("iw")
+    if not iw:
+        return None
+    code, text = await _run_cmd([iw, "dev", sta_iface, "info"], optional=True)
+    if code != 0:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "wiphy":
+            return f"phy{parts[1]}"
+    return None
+
+
 async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
     iw = shutil.which("iw")
     if not iw:
@@ -132,13 +146,20 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
         logger.info("Reusing existing virtual AP %s", ap_iface)
         return True
 
-    code, text = await _run_cmd(
-        [iw, "dev", sta_iface, "interface", "add", ap_iface, "type", "__ap"],
-        optional=True,
-    )
+    async def _try_add(args: list[str]) -> tuple[int, str]:
+        return await _run_cmd([iw, *args, "interface", "add", ap_iface, "type", "__ap"], optional=True)
+
+    code, text = await _try_add(["dev", sta_iface])
     if code == 0:
         logger.info("Created virtual AP %s on %s", ap_iface, sta_iface)
         return True
+
+    phy = await _phy_name(sta_iface)
+    if phy:
+        code, text = await _try_add([phy])
+        if code == 0:
+            logger.info("Created virtual AP %s via %s", ap_iface, phy)
+            return True
 
     if rtnetlink_error_is_benign(text):
         await asyncio.sleep(0.5)
@@ -147,16 +168,27 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
             return True
         await teardown_virtual_ap(ap_iface)
         await asyncio.sleep(0.3)
-        code2, text2 = await _run_cmd(
-            [iw, "dev", sta_iface, "interface", "add", ap_iface, "type", "__ap"],
-            optional=True,
-        )
+        code2, text2 = await _try_add(["dev", sta_iface])
         if code2 == 0 or await _interface_exists(ap_iface):
             return True
         text = text2 or text
 
     logger.warning("Virtual AP %s on %s unavailable: %s", ap_iface, sta_iface, text)
     return False
+
+
+async def prepare_dedicated_ap(sta_iface: str) -> None:
+    """Release STA from NetworkManager/wpa before hostapd on the physical NIC."""
+    await release_wifi_from_network_manager(sta_iface, disconnect=True)
+    iw = shutil.which("iw")
+    if iw:
+        await _run_cmd([iw, "dev", sta_iface, "disconnect"], optional=True)
+    ip_cmd = shutil.which("ip")
+    if ip_cmd:
+        await _run_cmd([ip_cmd, "link", "set", sta_iface, "down"], optional=True)
+        await asyncio.sleep(1.0)
+        await _run_cmd([ip_cmd, "link", "set", sta_iface, "up"], optional=True)
+        await asyncio.sleep(1.0)
 
 
 async def configure_ap_interface_ip(ap_iface: str, ap_ip: str, prefix: int) -> None:
@@ -203,7 +235,7 @@ async def plan_ap_interface(
             return ApInterfacePlan(sta_iface, ap_name, "concurrent", channel)
 
     logger.info("Using dedicated AP on %s", sta_iface)
-    await release_wifi_from_network_manager(sta_iface, disconnect=True)
+    await prepare_dedicated_ap(sta_iface)
     await configure_ap_interface_ip(sta_iface, ap_ip, netmask_prefix)
     return ApInterfacePlan(sta_iface, sta_iface, "dedicated", channel)
 

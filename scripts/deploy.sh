@@ -39,6 +39,7 @@ NILO_DOCKER_PULL="${NILO_DOCKER_PULL:-0}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 API_PORT="${API_PORT:-8080}"
+ENV_SECRETS_CHANGED=0
 
 COMPOSE_FILE=""
 COMPOSE_PROJECT="nilo-node"
@@ -280,9 +281,15 @@ restart_wifi_ap() {
     return 0
   fi
 
-  local token="${NILO_LOCAL_API_TOKEN:-}"
+  local token
+  token="$(resolve_api_token)"
   if [[ -z "${token}" ]]; then
-    warn "NILO_LOCAL_API_TOKEN no definido — no se puede reiniciar WiFi vía API"
+    warn "NILO_LOCAL_API_TOKEN no definido — generando en .env y reintentando tras reload"
+    ensure_env_secrets
+    token="$(resolve_api_token)"
+  fi
+  if [[ -z "${token}" ]]; then
+    warn "No se pudo obtener NILO_LOCAL_API_TOKEN — omitiendo reinicio WiFi vía API"
     return 1
   fi
 
@@ -304,7 +311,10 @@ restart_wifi_ap() {
     return 0
   fi
 
-  warn "Reinicio WiFi AP falló (HTTP ${http_code}). Revisa: $0 logs | grep -i wifi"
+  if [[ "${http_code}" == "401" || "${http_code}" == "403" ]]; then
+    warn "Token API rechazado (HTTP ${http_code}). Ejecuta de nuevo: sudo $0 update"
+  fi
+  warn "Reinicio WiFi AP falló (HTTP ${http_code}). Revisa: $0 logs | grep -iE 'wifi|hostapd'"
   return 1
 }
 
@@ -385,6 +395,67 @@ load_env() {
   fi
 }
 
+set_env_var() {
+  local key="$1" val="$2" env_file="${NILO_INSTALL_DIR}/.env"
+  mkdir -p "${NILO_INSTALL_DIR}"
+  touch "${env_file}"
+  if grep -q "^${key}=" "${env_file}" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "${env_file}"
+  else
+    echo "${key}=${val}" >> "${env_file}"
+  fi
+}
+
+read_env_var() {
+  local key="$1" env_file="${NILO_INSTALL_DIR}/.env"
+  [[ -f "${env_file}" ]] || return 0
+  grep -E "^${key}=" "${env_file}" 2>/dev/null | cut -d= -f2- || true
+}
+
+ensure_env_secrets() {
+  ensure_env
+  local token wifi setup_pass
+  token="$(read_env_var NILO_LOCAL_API_TOKEN)"
+  wifi="$(read_env_var NILO_WIFI_PASSWORD)"
+  setup_pass="$(read_env_var NILO_SETUP_PASSWORD)"
+  local changed=0
+
+  if [[ -z "${token}" ]]; then
+    token="$(gen_secret)"
+    set_env_var "NILO_LOCAL_API_TOKEN" "${token}"
+    changed=1
+  fi
+  if [[ -z "${wifi}" ]]; then
+    wifi="$(gen_secret)"
+    set_env_var "NILO_WIFI_PASSWORD" "${wifi}"
+    changed=1
+  fi
+  if [[ -z "${setup_pass}" ]]; then
+    setup_pass="$(gen_secret)"
+    set_env_var "NILO_SETUP_PASSWORD" "${setup_pass}"
+    changed=1
+  fi
+  if [[ "${changed}" == "1" ]]; then
+    ENV_SECRETS_CHANGED=1
+    log "Secrets generados/actualizados en ${NILO_INSTALL_DIR}/.env"
+  fi
+}
+
+resolve_api_token() {
+  local token=""
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nilo-node; then
+    token="$(docker exec nilo-node printenv NILO_LOCAL_API_TOKEN 2>/dev/null || true)"
+  fi
+  if [[ -z "${token}" ]]; then
+    load_env
+    token="${NILO_LOCAL_API_TOKEN:-}"
+  fi
+  if [[ -z "${token}" ]]; then
+    token="$(read_env_var NILO_LOCAL_API_TOKEN)"
+  fi
+  printf '%s' "${token}"
+}
+
 compose_build() {
   local pull_flag=()
   if [[ "${NILO_DOCKER_PULL}" == "1" ]]; then
@@ -400,16 +471,21 @@ compose_up() {
   local mode="$1"
   cd "${NILO_INSTALL_DIR}"
   export NILO_IMAGE="${NILO_IMAGE:-}"
+  local recreate=()
+  if [[ "${ENV_SECRETS_CHANGED:-0}" == "1" ]]; then
+    recreate=(--force-recreate)
+    log "Secrets nuevos en .env — recreando contenedor"
+  fi
 
   if [[ "${mode}" == "image" ]]; then
     [[ -n "${NILO_IMAGE}" ]] || die "NILO_IMAGE is required for image deploy mode"
     log "Pulling image ${NILO_IMAGE}..."
     ${DC[@]} -f "${COMPOSE_FILE}" pull
-    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans "${recreate[@]}"
   else
     log "Building image nilo-node:local..."
     compose_build
-    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans "${recreate[@]}"
   fi
 }
 
@@ -417,14 +493,19 @@ compose_update() {
   local mode="$1"
   cd "${NILO_INSTALL_DIR}"
   export NILO_IMAGE="${NILO_IMAGE:-}"
+  local recreate=()
+  if [[ "${ENV_SECRETS_CHANGED:-0}" == "1" ]]; then
+    recreate=(--force-recreate)
+    log "Secrets nuevos en .env — recreando contenedor"
+  fi
 
   if [[ "${mode}" == "image" ]]; then
     [[ -n "${NILO_IMAGE}" ]] || die "NILO_IMAGE is required for image deploy mode"
     ${DC[@]} -f "${COMPOSE_FILE}" pull
-    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans "${recreate[@]}"
   else
     compose_build
-    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans
+    ${DC[@]} -f "${COMPOSE_FILE}" up -d --remove-orphans "${recreate[@]}"
   fi
 }
 
@@ -493,7 +574,7 @@ cmd_install() {
   apply_wifi_ap_config
   ensure_wifi_ap_host
   prepare_wifi_ap_interface
-  ensure_env
+  ensure_env_secrets
   load_env
   compose_up "${mode}"
 
@@ -519,6 +600,7 @@ cmd_reload() {
   apply_wifi_ap_config
   ensure_wifi_ap_host
   prepare_wifi_ap_interface
+  ensure_env_secrets
   load_env
   compose_reload
   wait_healthy || true
@@ -544,6 +626,7 @@ cmd_update() {
   apply_wifi_ap_config
   ensure_wifi_ap_host
   prepare_wifi_ap_interface
+  ensure_env_secrets
   load_env
   compose_update "${mode}"
   wait_healthy || true

@@ -275,14 +275,19 @@ class WifiApManager:
             "ignore_broadcast_ssid=0",
         ]
         if self._wifi.password:
-            lines.extend(
-                [
-                    "wpa=2",
-                    f"wpa_passphrase={self._wifi.password}",
-                    "wpa_key_mgmt=WPA-PSK",
-                    "rsn_pairwise=CCMP",
-                ]
-            )
+            if len(self._wifi.password) < 8:
+                logger.warning(
+                    "WiFi password shorter than 8 characters — AP will be open (no WPA)"
+                )
+            else:
+                lines.extend(
+                    [
+                        "wpa=2",
+                        f"wpa_passphrase={self._wifi.password}",
+                        "wpa_key_mgmt=WPA-PSK",
+                        "rsn_pairwise=CCMP",
+                    ]
+                )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_dnsmasq_config(self) -> None:
@@ -318,10 +323,16 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.5)
         if self._hostapd_proc.returncode is not None:
             stderr = await self._hostapd_proc.stderr.read() if self._hostapd_proc.stderr else b""
-            raise RuntimeError(stderr.decode() or "hostapd exited immediately")
+            detail = stderr.decode(errors="replace").strip()
+            if not detail:
+                detail = f"hostapd exited (code {self._hostapd_proc.returncode})"
+            raise RuntimeError(
+                f"{detail} — config: {hostapd_conf}, interface: "
+                f"{self._active_interface}, mode: {self._ap_mode}"
+            )
 
         dnsmasq_bin = Path("/usr/sbin/dnsmasq")
         if not dnsmasq_bin.is_file():
