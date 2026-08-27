@@ -17,6 +17,14 @@ from nilo_node.network.wifi_prepare import (
 
 def test_freq_to_channel() -> None:
     assert freq_to_channel(2437) == 6
+    assert freq_to_channel(5540) == 108
+
+
+def test_hw_mode_for_channel() -> None:
+    from nilo_node.network.wifi_prepare import hw_mode_for_channel
+
+    assert hw_mode_for_channel(6) == "g"
+    assert hw_mode_for_channel(108) == "a"
 
 
 def test_rtnetlink_benign() -> None:

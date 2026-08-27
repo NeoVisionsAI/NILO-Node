@@ -13,7 +13,7 @@ WIFI_AP = {
     "enabled": True,
     "interface": "auto",
     "ap_interface": "uap0",
-    "concurrent_sta_ap": False,
+    "concurrent_sta_ap": True,
     "hardware_ap": True,
     "backend": "container",
     "mock_when_unavailable": True,

@@ -21,6 +21,7 @@ class ApInterfacePlan:
     ap_interface: str
     mode: str  # concurrent | dedicated
     channel: int | None = None
+    hw_mode: str = "g"  # g = 2.4 GHz, a = 5 GHz
 
 
 def rtnetlink_error_is_benign(message: str) -> bool:
@@ -40,11 +41,37 @@ def freq_to_channel(freq_mhz: int) -> int | None:
         return (freq_mhz - 2412) // 5 + 1
     if freq_mhz == 2484:
         return 14
+    if 5170 <= freq_mhz <= 5825:
+        return (freq_mhz - 5000) // 5
     return None
 
 
+def hw_mode_for_channel(channel: int) -> str:
+    return "g" if channel <= 14 else "a"
+
+
+def detect_sta_is_connected(sta_iface: str) -> bool:
+    iw = shutil.which("iw")
+    if not iw:
+        return False
+    try:
+        result = subprocess.run(
+            [iw, "dev", sta_iface, "link"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    text = result.stdout
+    if "Not connected" in text:
+        return False
+    return "Connected to" in text or "SSID:" in text
+
+
 def detect_operating_channel(sta_iface: str) -> int | None:
-    """Return WiFi channel used by STA (required for concurrent AP+STA)."""
+    """Return WiFi channel used by STA (required for concurrent AP+STA, #channels <= 1)."""
     iw = shutil.which("iw")
     if not iw:
         return None
@@ -58,13 +85,24 @@ def detect_operating_channel(sta_iface: str) -> int | None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
-    for line in result.stdout.splitlines():
+    text = result.stdout
+    match = re.search(r"channel\s+(\d+)", text, re.IGNORECASE)
+    if match:
+        channel = int(match.group(1))
+        logger.info(
+            "STA %s on channel %d (%s GHz) — AP will match",
+            sta_iface,
+            channel,
+            "2.4" if channel <= 14 else "5",
+        )
+        return channel
+    for line in text.splitlines():
         if "freq:" not in line.lower():
             continue
-        match = re.search(r"freq:\s*(\d+)", line, re.IGNORECASE)
-        if not match:
+        freq_match = re.search(r"freq:\s*(\d+)", line, re.IGNORECASE)
+        if not freq_match:
             continue
-        channel = freq_to_channel(int(match.group(1)))
+        channel = freq_to_channel(int(freq_match.group(1)))
         if channel is not None:
             logger.info("STA %s on channel %d — AP will match", sta_iface, channel)
             return channel
@@ -179,16 +217,27 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
 
 async def prepare_dedicated_ap(sta_iface: str) -> None:
     """Release STA from NetworkManager/wpa before hostapd on the physical NIC."""
+    if detect_sta_is_connected(sta_iface):
+        logger.warning(
+            "STA %s still connected — dedicated AP may fail (key not allowed). "
+            "Use concurrent_sta_ap: true + uap0, or disconnect WiFi client first.",
+            sta_iface,
+        )
     await release_wifi_from_network_manager(sta_iface, disconnect=True)
     iw = shutil.which("iw")
     if iw:
         await _run_cmd([iw, "dev", sta_iface, "disconnect"], optional=True)
+    wpa_cli = shutil.which("wpa_cli")
+    if wpa_cli:
+        await _run_cmd([wpa_cli, "-i", sta_iface, "disconnect"], optional=True)
     ip_cmd = shutil.which("ip")
     if ip_cmd:
         await _run_cmd([ip_cmd, "link", "set", sta_iface, "down"], optional=True)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5)
         await _run_cmd([ip_cmd, "link", "set", sta_iface, "up"], optional=True)
         await asyncio.sleep(1.0)
+    if iw and not detect_sta_is_connected(sta_iface):
+        await _run_cmd([iw, "dev", sta_iface, "set", "type", "__ap"], optional=True)
 
 
 async def configure_ap_interface_ip(ap_iface: str, ap_ip: str, prefix: int) -> None:
@@ -225,19 +274,33 @@ async def plan_ap_interface(
         await _run_cmd([iw, "reg", "set", country_code], optional=True)
 
     channel = detect_operating_channel(sta_iface) or default_channel
+    hw_mode = hw_mode_for_channel(channel)
     ap_name = (ap_iface or "").strip()
+    sta_connected = detect_sta_is_connected(sta_iface)
+    use_concurrent = concurrent_sta_ap or (
+        sta_connected and ap_name and ap_name != sta_iface
+    )
+    if sta_connected and not concurrent_sta_ap and use_concurrent:
+        logger.info(
+            "STA connected on %s — auto-using concurrent AP on %s (same channel %d)",
+            sta_iface,
+            ap_name,
+            channel,
+        )
 
-    if concurrent_sta_ap and ap_name and ap_name != sta_iface:
+    if use_concurrent and ap_name and ap_name != sta_iface:
         await teardown_virtual_ap(ap_name)
         if await _create_virtual_ap(sta_iface, ap_name):
             await release_wifi_from_network_manager(ap_name, disconnect=False)
             await configure_ap_interface_ip(ap_name, ap_ip, netmask_prefix)
-            return ApInterfacePlan(sta_iface, ap_name, "concurrent", channel)
+            return ApInterfacePlan(
+                sta_iface, ap_name, "concurrent", channel, hw_mode
+            )
 
     logger.info("Using dedicated AP on %s", sta_iface)
     await prepare_dedicated_ap(sta_iface)
     await configure_ap_interface_ip(sta_iface, ap_ip, netmask_prefix)
-    return ApInterfacePlan(sta_iface, sta_iface, "dedicated", channel)
+    return ApInterfacePlan(sta_iface, sta_iface, "dedicated", channel, hw_mode)
 
 
 async def verify_ap_mode(iface: str) -> str | None:

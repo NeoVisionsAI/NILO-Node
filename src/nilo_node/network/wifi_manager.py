@@ -16,6 +16,7 @@ from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_scri
 from nilo_node.network.wifi_prepare import (
     ApInterfacePlan,
     detect_operating_channel,
+    hw_mode_for_channel,
     plan_ap_interface,
     teardown_virtual_ap,
     verify_ap_mode,
@@ -54,6 +55,7 @@ class WifiApManager:
         self._ap_mode: str | None = None
         self._backend: str = "container"
         self._hostapd_channel: int | None = None
+        self._hostapd_hw_mode: str = "g"
 
     def resolved_interface(self) -> str:
         if self._active_interface:
@@ -196,6 +198,7 @@ class WifiApManager:
         self._active_interface = plan.ap_interface
         self._ap_mode = plan.mode
         self._hostapd_channel = plan.channel
+        self._hostapd_hw_mode = plan.hw_mode
         self._write_hostapd_config(ssid)
         self._write_dnsmasq_config()
         await self._kill_ap_processes()
@@ -243,6 +246,7 @@ class WifiApManager:
         self._sta_interface = None
         self._ap_mode = None
         self._hostapd_channel = None
+        self._hostapd_hw_mode = "g"
         self._backend = "container"
 
     async def _start_via_host_script(self) -> None:
@@ -292,10 +296,12 @@ class WifiApManager:
         path = self._config_dir / "hostapd.conf"
         iface = self._active_interface or self.resolved_interface()
         channel = self._hostapd_channel or self._wifi.channel
-        if self._ap_mode == "concurrent" and self._sta_interface:
+        hw_mode = self._hostapd_hw_mode
+        if self._sta_interface:
             detected = detect_operating_channel(self._sta_interface)
             if detected is not None:
                 channel = detected
+                hw_mode = hw_mode_for_channel(channel)
         lines = [
             f"interface={iface}",
             "driver=nl80211",
@@ -303,12 +309,14 @@ class WifiApManager:
             f"channel={channel}",
             f"country_code={self._wifi.country_code}",
             "ieee80211d=1",
-            "hw_mode=g",
+            f"hw_mode={hw_mode}",
             "ieee80211n=1",
             "wmm_enabled=1",
             "auth_algs=1",
             "ignore_broadcast_ssid=0",
         ]
+        if hw_mode == "a":
+            lines.append("ieee80211ac=1")
         if self._wifi.password:
             if len(self._wifi.password) < 8:
                 logger.warning(
