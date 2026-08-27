@@ -65,7 +65,22 @@ Si prefieres que hostapd corra en el host vía systemd:
 2. `sudo systemctl enable --now nilo-node-wifi-ap` (instalado por `ensure-wifi-ap.sh`)
 3. **No** usar `backend: host` y contenedor a la vez — elige uno.
 
-## Errores frecuentes
+### Error `Name not unique on network`
+
+`uap0` ya existía de un arranque anterior. Tras `deploy update`, reinicia el AP:
+
+```bash
+curl -X POST -H "Authorization: Bearer $NILO_LOCAL_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/wifi/restart
+```
+
+Si persiste, en el mini PC (no en el portátil dev):
+
+```bash
+sudo iw dev uap0 del 2>/dev/null || true
+sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/prepare-ap-interface.sh wlp3s0 uap0
+```
+
 
 | Síntoma | Causa | Acción |
 |---------|-------|--------|

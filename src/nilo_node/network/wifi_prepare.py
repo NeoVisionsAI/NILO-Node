@@ -72,25 +72,38 @@ async def _interface_exists(iface: str) -> bool:
 
 
 async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
-    if await _interface_exists(ap_iface):
-        return True
     iw = shutil.which("iw")
     if not iw:
         return False
+
+    if await _interface_exists(ap_iface):
+        code, text = await _run_cmd([iw, "dev", ap_iface, "info"], optional=True)
+        if code == 0:
+            logger.info("Reusing existing interface %s (%s)", ap_iface, text.splitlines()[0] if text else "")
+            return True
+        await _run_cmd([iw, "dev", ap_iface, "del"], optional=True)
+        await asyncio.sleep(0.2)
+
     code, text = await _run_cmd(
         [iw, "dev", sta_iface, "interface", "add", ap_iface, "type", "__ap"],
         optional=True,
     )
-    if code != 0:
-        logger.warning(
-            "Virtual AP %s on %s not supported by driver: %s",
-            ap_iface,
-            sta_iface,
-            text,
-        )
-        return False
-    logger.info("Created virtual AP interface %s on %s", ap_iface, sta_iface)
-    return True
+    if code == 0:
+        logger.info("Created virtual AP interface %s on %s", ap_iface, sta_iface)
+        return True
+
+    if "Name not unique" in text or "File exists" in text:
+        if await _interface_exists(ap_iface):
+            logger.info("Virtual AP %s already present — reusing", ap_iface)
+            return True
+
+    logger.warning(
+        "Virtual AP %s on %s not available: %s",
+        ap_iface,
+        sta_iface,
+        text,
+    )
+    return False
 
 
 async def plan_ap_interface(

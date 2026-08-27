@@ -18,6 +18,19 @@ from nilo_node.network.wifi_prepare import plan_ap_interface, verify_ap_mode
 logger = logging.getLogger(__name__)
 
 
+def _ip_addr_error_is_benign(message: str) -> bool:
+    """Ignore idempotent RTNETLINK errors when re-applying AP network config."""
+    lowered = message.lower()
+    return any(
+        token in lowered
+        for token in (
+            "file exists",
+            "name not unique",
+            "already exists",
+        )
+    )
+
+
 class WifiApStatus(BaseModel):
     enabled: bool
     running: bool = False
@@ -239,22 +252,26 @@ class WifiApManager:
         iface = self._active_interface or self.resolved_interface()
         prefix = self._netmask_prefix()
         cidr = f"{self._wifi.ap_ip}/{prefix}"
-        commands = [
-            [ip_cmd, "link", "set", iface, "up"],
-            [ip_cmd, "addr", "flush", "dev", iface, "label", iface],
-            [ip_cmd, "addr", "add", cidr, "dev", iface],
+        commands: list[tuple[list[str], bool]] = [
+            ([ip_cmd, "link", "set", iface, "up"], True),
+            ([ip_cmd, "addr", "flush", "dev", iface], False),
+            ([ip_cmd, "addr", "replace", cidr, "dev", iface], False),
         ]
-        for cmd in commands:
+        for cmd, required in commands:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await proc.communicate()
-            if proc.returncode != 0 and cmd[1] != "addr":
-                raise RuntimeError(stderr.decode() or f"Failed: {' '.join(cmd)}")
-            if proc.returncode != 0 and cmd[1] == "addr" and cmd[2] == "flush":
-                logger.debug("Interface flush skipped: %s", stderr.decode().strip())
+            if proc.returncode != 0:
+                err = stderr.decode().strip()
+                if not required and _ip_addr_error_is_benign(err):
+                    logger.debug("Interface setup note (%s): %s", " ".join(cmd[2:]), err)
+                    continue
+                if required:
+                    raise RuntimeError(err or f"Failed: {' '.join(cmd)}")
+                logger.warning("Interface setup skipped (%s): %s", " ".join(cmd[2:]), err)
 
     def _interface_available(self, iface: str | None = None) -> bool:
         name = iface or self._sta_interface or resolve_wifi_interface(self._wifi.interface)

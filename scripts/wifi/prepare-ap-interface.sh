@@ -37,10 +37,14 @@ iw reg set "${COUNTRY}" 2>/dev/null || true
 if ! ip link show "${AP_IFACE}" &>/dev/null; then
   if iw dev "${STA_IFACE}" interface add "${AP_IFACE}" type __ap 2>/dev/null; then
     echo "[wifi-prepare] Created virtual AP ${AP_IFACE}"
+  elif ip link show "${AP_IFACE}" &>/dev/null; then
+    echo "[wifi-prepare] Virtual AP ${AP_IFACE} already exists — reusing"
   else
     echo "[wifi-prepare] Virtual AP not supported — will use dedicated AP on ${STA_IFACE}"
     AP_IFACE="${STA_IFACE}"
   fi
+else
+  echo "[wifi-prepare] Reusing existing ${AP_IFACE}"
 fi
 
 if command -v nmcli >/dev/null 2>&1; then

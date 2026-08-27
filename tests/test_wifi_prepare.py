@@ -6,7 +6,23 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from nilo_node.network.wifi_prepare import plan_ap_interface, verify_ap_mode
+from nilo_node.network.wifi_prepare import _create_virtual_ap, plan_ap_interface, verify_ap_mode
+
+
+@pytest.mark.asyncio
+async def test_create_virtual_ap_reuses_existing_name_not_unique() -> None:
+    with patch(
+        "nilo_node.network.wifi_prepare._run_cmd",
+        new_callable=AsyncMock,
+    ) as run_cmd:
+        with patch(
+            "nilo_node.network.wifi_prepare._interface_exists",
+            new_callable=AsyncMock,
+            side_effect=[False, True],
+        ):
+            run_cmd.return_value = (2, "RTNETLINK answers: Name not unique on network")
+            with patch("nilo_node.network.wifi_prepare.shutil.which", return_value="/usr/sbin/iw"):
+                assert await _create_virtual_ap("wlp3s0", "uap0") is True
 
 
 @pytest.mark.asyncio

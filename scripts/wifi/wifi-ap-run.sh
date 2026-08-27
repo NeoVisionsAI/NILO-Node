@@ -92,21 +92,26 @@ ensure_ap_iface() {
   if [[ "${ap}" != "${sta}" ]] && iw dev "${sta}" interface add "${ap}" type __ap 2>/dev/null; then
     log "Created virtual AP ${ap} on ${sta}"
     AP_MODE="concurrent"
+  elif ip link show "${ap}" &>/dev/null; then
+    log "Virtual AP ${ap} already exists — reusing"
+    AP_MODE="concurrent"
+  else
+    warn "Virtual AP not supported — dedicated mode on ${sta}"
+    AP_MODE="dedicated"
+    if command -v nmcli >/dev/null 2>&1; then
+      nmcli device disconnect "${sta}" 2>/dev/null || true
+      nmcli device set "${sta}" managed no 2>/dev/null || true
+    fi
+    WIFI_AP_INTERFACE="${sta}"
+    ap="${sta}"
+  fi
+
+  if [[ "${AP_MODE}" == "concurrent" ]]; then
     if command -v nmcli >/dev/null 2>&1; then
       nmcli device set "${ap}" managed no 2>/dev/null || true
     fi
-    ip link set "${ap}" up
-    return 0
+    ip link set "${ap}" up 2>/dev/null || true
   fi
-
-  warn "Virtual AP not supported — dedicated mode on ${sta}"
-  AP_MODE="dedicated"
-  if command -v nmcli >/dev/null 2>&1; then
-    nmcli device disconnect "${sta}" 2>/dev/null || true
-    nmcli device set "${sta}" managed no 2>/dev/null || true
-  fi
-  WIFI_AP_INTERFACE="${sta}"
-  ap="${sta}"
 }
 
 write_configs() {
@@ -163,7 +168,7 @@ start_ap() {
 
   ip link set "${ap}" up
   ip addr flush dev "${ap}" 2>/dev/null || true
-  ip addr add "${WIFI_AP_IP}/24" dev "${ap}" 2>/dev/null || true
+  ip addr replace "${WIFI_AP_IP}/24" dev "${ap}" 2>/dev/null || true
 
   pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
