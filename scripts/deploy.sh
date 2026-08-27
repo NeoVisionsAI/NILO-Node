@@ -244,8 +244,17 @@ prepare_wifi_ap_interface() {
   fi
   [[ -f "${prep}" ]] || { warn "prepare-ap-interface.sh not found — skip"; return 0; }
   chmod +x "${prep}" 2>/dev/null || true
-  log "Preparando interfaz WiFi AP (uap0 / NM)..."
+  log "Preparando host para WiFi AP (rfkill, regdomain, NM)..."
   NILO_WIFI_ALLOW_HOST_SCRIPTS=1 bash "${prep}" || warn "prepare-ap-interface.sh failed (non-fatal)"
+}
+
+cleanup_stale_uap0() {
+  command -v iw >/dev/null 2>&1 || return 0
+  if iw dev uap0 info >/dev/null 2>&1; then
+    log "Eliminando uap0 previo (evita 'Name not unique')..."
+    iw dev uap0 del 2>/dev/null || true
+    sleep 1
+  fi
 }
 
 restart_wifi_ap() {
@@ -276,6 +285,9 @@ restart_wifi_ap() {
     warn "NILO_LOCAL_API_TOKEN no definido — no se puede reiniciar WiFi vía API"
     return 1
   fi
+
+  sleep 3
+  cleanup_stale_uap0
 
   log "Reiniciando WiFi AP vía API..."
   local http_code

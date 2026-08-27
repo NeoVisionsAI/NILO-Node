@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Create uap0 (if supported) and release AP iface from NetworkManager.
-# Keeps STA (wlp3s0) connected when concurrent mode works.
+# Host prep for WiFi AP — does NOT create uap0 (the container creates it on start).
 #
 # ⚠️  SOLO en el mini PC destino. NO ejecutar en el PC de desarrollo.
 #     Requiere: NILO_WIFI_ALLOW_HOST_SCRIPTS=1
 #
 # Usage:
 #   sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/prepare-ap-interface.sh
-#   sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/prepare-ap-interface.sh wlp3s0 uap0
 
 set -euo pipefail
 
@@ -29,36 +27,17 @@ if [[ -z "${STA_IFACE}" ]]; then
   exit 1
 fi
 
-echo "[wifi-prepare] STA=${STA_IFACE} AP=${AP_IFACE}"
+echo "[wifi-prepare] STA=${STA_IFACE} (AP ${AP_IFACE} lo crea NILO-Node al arrancar)"
 
 rfkill unblock wifi 2>/dev/null || true
 iw reg set "${COUNTRY}" 2>/dev/null || true
 
-if ! ip link show "${AP_IFACE}" &>/dev/null; then
-  if iw dev "${STA_IFACE}" interface add "${AP_IFACE}" type __ap 2>/dev/null; then
-    echo "[wifi-prepare] Created virtual AP ${AP_IFACE}"
-  elif ip link show "${AP_IFACE}" &>/dev/null; then
-    echo "[wifi-prepare] Virtual AP ${AP_IFACE} already exists — reusing"
-  else
-    echo "[wifi-prepare] Virtual AP not supported — will use dedicated AP on ${STA_IFACE}"
-    AP_IFACE="${STA_IFACE}"
-  fi
-else
-  echo "[wifi-prepare] Reusing existing ${AP_IFACE}"
-fi
-
 if command -v nmcli >/dev/null 2>&1; then
   nmcli radio wifi on 2>/dev/null || true
-  if [[ "${AP_IFACE}" == "${STA_IFACE}" ]]; then
-    nmcli device disconnect "${STA_IFACE}" 2>/dev/null || true
-    nmcli device set "${STA_IFACE}" managed no
-    echo "[wifi-prepare] Dedicated AP: ${STA_IFACE} unmanaged"
-  else
+  if ip link show "${AP_IFACE}" &>/dev/null; then
     nmcli device set "${AP_IFACE}" managed no 2>/dev/null || true
-    echo "[wifi-prepare] Concurrent: STA=${STA_IFACE} stays managed, AP=${AP_IFACE} unmanaged"
+    echo "[wifi-prepare] ${AP_IFACE} unmanaged (ya existía)"
   fi
 fi
 
-ip link set "${AP_IFACE}" up 2>/dev/null || true
-
-echo "[wifi-prepare] Done. Restart WiFi AP in NILO-Node."
+echo "[wifi-prepare] Done."

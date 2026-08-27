@@ -85,8 +85,8 @@ ensure_ap_iface() {
   iw reg set "${WIFI_COUNTRY_CODE}" 2>/dev/null || true
 
   if ip link show "${ap}" &>/dev/null; then
-    AP_MODE="concurrent"
-    return 0
+    iw dev "${ap}" del 2>/dev/null || true
+    sleep 0.5
   fi
 
   if [[ "${ap}" != "${sta}" ]] && iw dev "${sta}" interface add "${ap}" type __ap 2>/dev/null; then

@@ -13,22 +13,14 @@ from pydantic import BaseModel
 from nilo_node.config.models import AppConfig, WifiConfig
 from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
 from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_script
-from nilo_node.network.wifi_prepare import plan_ap_interface, verify_ap_mode
+from nilo_node.network.wifi_prepare import (
+    detect_operating_channel,
+    plan_ap_interface,
+    teardown_virtual_ap,
+    verify_ap_mode,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _ip_addr_error_is_benign(message: str) -> bool:
-    """Ignore idempotent RTNETLINK errors when re-applying AP network config."""
-    lowered = message.lower()
-    return any(
-        token in lowered
-        for token in (
-            "file exists",
-            "name not unique",
-            "already exists",
-        )
-    )
 
 
 class WifiApStatus(BaseModel):
@@ -60,6 +52,7 @@ class WifiApManager:
         self._sta_interface: str | None = None
         self._ap_mode: str | None = None
         self._backend: str = "container"
+        self._hostapd_channel: int | None = None
 
     def resolved_interface(self) -> str:
         if self._active_interface:
@@ -74,7 +67,7 @@ class WifiApManager:
         return f"{self._wifi.ssid_prefix}-{short_id}"
 
     def get_status(self) -> WifiApStatus:
-        running = self._started and (
+        running = self._started and not self._error and (
             self._mock
             or self._backend == "host"
             or (
@@ -147,14 +140,18 @@ class WifiApManager:
                 self._wifi.ap_interface,
                 concurrent_sta_ap=self._wifi.concurrent_sta_ap,
                 country_code=self._wifi.country_code,
+                ap_ip=self._wifi.ap_ip,
+                netmask_prefix=self._netmask_prefix(),
+                default_channel=self._wifi.channel,
             )
             self._sta_interface = plan.sta_interface
             self._active_interface = plan.ap_interface
             self._ap_mode = plan.mode
+            self._hostapd_channel = plan.channel
             self._write_hostapd_config(ssid)
             self._write_dnsmasq_config()
-            await self._configure_interface()
             await self._start_processes()
+            await asyncio.sleep(1.0)
             ap_error = await verify_ap_mode(plan.ap_interface)
             if ap_error:
                 raise RuntimeError(ap_error)
@@ -179,6 +176,9 @@ class WifiApManager:
     async def stop(self) -> None:
         if not self._started:
             return
+        ap_iface = self._active_interface
+        sta_iface = self._sta_interface
+        ap_mode = self._ap_mode
         if self._backend == "host":
             await self._stop_via_host_script()
         for proc, name in (
@@ -195,11 +195,19 @@ class WifiApManager:
                 logger.debug("Stopped %s", name)
         self._hostapd_proc = None
         self._dnsmasq_proc = None
+        if (
+            ap_mode == "concurrent"
+            and ap_iface
+            and sta_iface
+            and ap_iface != sta_iface
+        ):
+            await teardown_virtual_ap(ap_iface)
         self._started = False
         self._mock = False
         self._active_interface = None
         self._sta_interface = None
         self._ap_mode = None
+        self._hostapd_channel = None
         self._backend = "container"
 
     async def _start_via_host_script(self) -> None:
@@ -241,38 +249,6 @@ class WifiApManager:
         binary = "".join(f"{int(p):08b}" for p in parts)
         return binary.count("1")
 
-    async def _configure_interface(self) -> None:
-        if not self._wifi.configure_interface_ip:
-            return
-        ip_cmd = shutil.which("ip")
-        if not ip_cmd:
-            raise RuntimeError(
-                "ip command not found (install iproute2 in container or on host)"
-            )
-        iface = self._active_interface or self.resolved_interface()
-        prefix = self._netmask_prefix()
-        cidr = f"{self._wifi.ap_ip}/{prefix}"
-        commands: list[tuple[list[str], bool]] = [
-            ([ip_cmd, "link", "set", iface, "up"], True),
-            ([ip_cmd, "addr", "flush", "dev", iface], False),
-            ([ip_cmd, "addr", "replace", cidr, "dev", iface], False),
-        ]
-        for cmd, required in commands:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                err = stderr.decode().strip()
-                if not required and _ip_addr_error_is_benign(err):
-                    logger.debug("Interface setup note (%s): %s", " ".join(cmd[2:]), err)
-                    continue
-                if required:
-                    raise RuntimeError(err or f"Failed: {' '.join(cmd)}")
-                logger.warning("Interface setup skipped (%s): %s", " ".join(cmd[2:]), err)
-
     def _interface_available(self, iface: str | None = None) -> bool:
         name = iface or self._sta_interface or resolve_wifi_interface(self._wifi.interface)
         return Path(f"/sys/class/net/{name}").exists()
@@ -280,11 +256,16 @@ class WifiApManager:
     def _write_hostapd_config(self, ssid: str) -> None:
         path = self._config_dir / "hostapd.conf"
         iface = self._active_interface or self.resolved_interface()
+        channel = self._hostapd_channel or self._wifi.channel
+        if self._ap_mode == "concurrent" and self._sta_interface:
+            detected = detect_operating_channel(self._sta_interface)
+            if detected is not None:
+                channel = detected
         lines = [
             f"interface={iface}",
             "driver=nl80211",
             f"ssid={ssid}",
-            f"channel={self._wifi.channel}",
+            f"channel={channel}",
             f"country_code={self._wifi.country_code}",
             "ieee80211d=1",
             "hw_mode=g",

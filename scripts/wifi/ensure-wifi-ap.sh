@@ -68,8 +68,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable nilo-node-wifi-ap.service 2>/dev/null || true
-log "Installed ${UNIT} (enable/start after deploy if using backend=host)"
-
-log "Done. For container-managed AP (default), uap0 NM rule is enough."
-log "For host-managed AP: set wifi.backend=host in config and: systemctl start nilo-node-wifi-ap"
+# Disable system hostapd/dnsmasq if using container backend (default).
+# Do NOT enable nilo-node-wifi-ap.service unless wifi.backend=host in YAML.
+systemctl disable nilo-node-wifi-ap.service 2>/dev/null || true
+systemctl stop nilo-node-wifi-ap.service 2>/dev/null || true
+log "systemd nilo-node-wifi-ap disabled (container manages AP by default)"
