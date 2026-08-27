@@ -173,6 +173,11 @@ ensure_config() {
   local config="${NILO_INSTALL_DIR}/config/nilo-node.yaml"
   mkdir -p "${NILO_INSTALL_DIR}/config"
 
+  if [[ -d "${config}" ]]; then
+    warn "${config} is a directory (Docker bind-mount artifact) — recreating as file"
+    rm -rf "${config}"
+  fi
+
   if [[ ! -f "${config}" ]]; then
     [[ -f "${example}" ]] || die "Missing ${example}"
     cp "${example}" "${config}"
