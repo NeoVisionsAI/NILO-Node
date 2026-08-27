@@ -37,7 +37,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 ENTRYPOINT ["/entrypoint.sh"]
 
-# --- Hardware: OAK ToF + pose test GUIs + camera extras --------------------
+# --- Hardware: OAK ToF + pose test GUIs + camera extras + WiFi AP -----------
 FROM base AS hardware
 
 RUN apt-get update \
@@ -49,6 +49,10 @@ RUN apt-get update \
         libxext6 \
         libxrender1 \
         libgomp1 \
+        iproute2 \
+        iw \
+        hostapd \
+        dnsmasq \
     && rm -rf /var/lib/apt/lists/*
 
 # Heavy deps (depthai, mediapipe, ultralytics/torch) — cached until pyproject.toml changes

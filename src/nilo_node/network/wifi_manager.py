@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -153,13 +154,18 @@ class WifiApManager:
     async def _configure_interface(self) -> None:
         if not self._wifi.configure_interface_ip:
             return
+        ip_cmd = shutil.which("ip")
+        if not ip_cmd:
+            raise RuntimeError(
+                "ip command not found (install iproute2 in container or on host)"
+            )
         iface = self._active_interface or self.resolved_interface()
         prefix = self._netmask_prefix()
         cidr = f"{self._wifi.ap_ip}/{prefix}"
         commands = [
-            ["ip", "link", "set", iface, "up"],
-            ["ip", "addr", "flush", "dev", iface, "label", iface],
-            ["ip", "addr", "add", cidr, "dev", iface],
+            [ip_cmd, "link", "set", iface, "up"],
+            [ip_cmd, "addr", "flush", "dev", iface, "label", iface],
+            [ip_cmd, "addr", "add", cidr, "dev", iface],
         ]
         for cmd in commands:
             proc = await asyncio.create_subprocess_exec(
