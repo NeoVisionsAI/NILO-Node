@@ -53,6 +53,8 @@ RUN apt-get update \
         iw \
         hostapd \
         dnsmasq \
+    && rm -rf /etc/dnsmasq.d/* \
+    && printf '%s\n' '# NILO-Node manages dnsmasq via /data/wifi/dnsmasq.conf' > /etc/dnsmasq.conf \
     && rm -rf /var/lib/apt/lists/*
 
 # Heavy deps (depthai, mediapipe, ultralytics/torch) — cached until pyproject.toml changes

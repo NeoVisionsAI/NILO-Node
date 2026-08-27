@@ -210,12 +210,18 @@ class WifiApManager:
     def _write_dnsmasq_config(self) -> None:
         path = self._config_dir / "dnsmasq.conf"
         iface = self._active_interface or self.resolved_interface()
-        content = f"""interface={iface}
+        # Self-contained AP DHCP only (port=0 disables DNS). No netmask in dhcp-range.
+        content = f"""# NILO-Node WiFi AP
+interface={iface}
 bind-interfaces
-dhcp-range={self._wifi.dhcp_range_start},{self._wifi.dhcp_range_end},{self._wifi.netmask},12h
-dhcp-option=3,{self._wifi.ap_ip}
-dhcp-option=6,{self._wifi.ap_ip}
-address=/{self.ssid_for_node().lower()}.local/{self._wifi.ap_ip}
+except-interface=lo
+port=0
+no-resolv
+no-hosts
+dhcp-authoritative
+dhcp-range={self._wifi.dhcp_range_start},{self._wifi.dhcp_range_end},12h
+dhcp-option=option:router,{self._wifi.ap_ip}
+dhcp-option=option:dns-server,{self._wifi.ap_ip}
 """
         path.write_text(content, encoding="utf-8")
 
@@ -239,11 +245,25 @@ address=/{self.ssid_for_node().lower()}.local/{self._wifi.ap_ip}
             stderr = await self._hostapd_proc.stderr.read() if self._hostapd_proc.stderr else b""
             raise RuntimeError(stderr.decode() or "hostapd exited immediately")
 
+        dnsmasq_bin = Path("/usr/sbin/dnsmasq")
+        if not dnsmasq_bin.is_file():
+            dnsmasq_bin = Path(shutil.which("dnsmasq") or "dnsmasq")
+        conf_path = str(dnsmasq_conf.resolve())
+        test_proc = await asyncio.create_subprocess_exec(
+            str(dnsmasq_bin),
+            f"--conf-file={conf_path}",
+            "--test",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, test_stderr = await test_proc.communicate()
+        if test_proc.returncode != 0:
+            raise RuntimeError(test_stderr.decode() or "dnsmasq config test failed")
+
         self._dnsmasq_proc = await asyncio.create_subprocess_exec(
-            "dnsmasq",
-            "--conf-file",
-            str(dnsmasq_conf),
-            "--keep-in-foreground",
+            str(dnsmasq_bin),
+            f"--conf-file={conf_path}",
+            "-k",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )

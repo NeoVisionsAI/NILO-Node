@@ -122,6 +122,25 @@ async def test_wifi_ap_mock_mode(tmp_path: Path) -> None:
     await wifi.stop()
 
 
+def test_wifi_dnsmasq_config_syntax(tmp_path: Path) -> None:
+    config = AppConfig.model_validate(
+        {
+            "storage": {"base_path": str(tmp_path)},
+            "wifi": {"enabled": True, "interface": "wlp3s0"},
+        }
+    )
+    wifi = WifiApManager(config, tmp_path, "abcd1234-5678-90ab-cdef-1234567890ab")
+    wifi._active_interface = "wlp3s0"
+    (tmp_path / "wifi").mkdir()
+    wifi._write_dnsmasq_config()
+    text = (tmp_path / "wifi" / "dnsmasq.conf").read_text(encoding="utf-8")
+    assert "255.255.255.0" not in text
+    assert "address=/" not in text
+    assert "port=0" in text
+    assert "dhcp-authoritative" in text
+    assert "dhcp-option=option:router,192.168.50.1" in text
+
+
 def test_cardmed_register_and_upload(tmp_path: Path) -> None:
     with _build_test_app(tmp_path) as (client, repo):
         headers = {"Authorization": "Bearer test-token"}
