@@ -26,8 +26,19 @@ if ! command -v nmcli >/dev/null 2>&1; then
 fi
 
 if [[ -z "${POE_IFACE}" ]]; then
-  log "Detecting Ethernet interface (use POE_IFACE=... to override)..."
-  POE_IFACE="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="ethernet"{print $1; exit}')"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PICKER="${SCRIPT_DIR}/network-interfaces.sh"
+  if [[ -x "${PICKER}" ]] && [[ -t 0 ]]; then
+    log "Selecciona interfaz PoE (OAK → inyector → este puerto Ethernet)..."
+    if POE_IFACE="$("${PICKER}" pick)"; then
+      log "Usando ${POE_IFACE}"
+    else
+      die "No se eligió interfaz PoE. Usa: POE_IFACE=enp2s0 $0"
+    fi
+  else
+    log "Detecting Ethernet interface (use POE_IFACE=... or: ./network-interfaces.sh list)..."
+    POE_IFACE="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="ethernet"{print $1; exit}')"
+  fi
 fi
 
 [[ -n "${POE_IFACE}" ]] || die "No ethernet interface found. Set POE_IFACE manually."

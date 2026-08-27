@@ -6,9 +6,11 @@
 #   - Red WiFi del nodo + acceso al portal /setup/
 #
 # Usage (desde el repo clonado):
-#   sudo ./scripts/setup-mini-pc.sh
-#   sudo POE_IFACE=enp2s0 ./scripts/setup-mini-pc.sh   # + red PoE OAK
-#   sudo NONINTERACTIVE=1 INSTALL_SYSTEMD=1 ./scripts/setup-mini-pc.sh
+#   sudo ./scripts/setup-mini-pc.sh                    # menú interactivo PoE
+#   sudo ./scripts/setup-mini-pc.sh --list-interfaces  # solo listar redes
+#   sudo POE_IFACE=enp2s0 ./scripts/setup-mini-pc.sh   # PoE sin menú
+#   sudo SKIP_POE=1 ./scripts/setup-mini-pc.sh         # sin configurar PoE
+#   sudo NONINTERACTIVE=1 ./scripts/setup-mini-pc.sh   # sin menús (auto/secrets)
 #
 # Tras ejecutar: conéctate al WiFi impreso y abre http://192.168.50.1:8080/setup/
 
@@ -18,8 +20,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NILO_INSTALL_DIR="${NILO_INSTALL_DIR:-/opt/nilo-node}"
 POE_IFACE="${POE_IFACE:-}"
-NONINTERACTIVE="${NONINTERACTIVE:-1}"
+SKIP_POE="${SKIP_POE:-0}"
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
+POE_STATE_FILE="${POE_STATE_FILE:-${NILO_INSTALL_DIR}/config/poe.env}"
 
 log() { printf '[nilo-setup] %s\n' "$*"; }
 warn() { printf '[nilo-setup] WARN: %s\n' "$*" >&2; }
@@ -128,12 +132,36 @@ install_nilo_node() {
 }
 
 optional_poe_network() {
-  if [[ -n "${POE_IFACE}" ]]; then
-    log "Configurando red PoE en ${POE_IFACE}..."
-    POE_IFACE="${POE_IFACE}" "${REPO_ROOT}/scripts/oak/setup-poe-network.sh"
-  else
-    warn "POE_IFACE no definido — omite red PoE OAK."
-    warn "  Ejemplo: sudo POE_IFACE=enp2s0 $0"
+  if [[ "${SKIP_POE}" == "1" ]]; then
+    log "SKIP_POE=1 — omitiendo red PoE."
+    return 0
+  fi
+
+  local picker="${REPO_ROOT}/scripts/oak/network-interfaces.sh"
+  [[ -x "${picker}" ]] || chmod +x "${picker}"
+
+  if [[ -z "${POE_IFACE}" ]]; then
+    log "Detectando interfaces de red (menú PoE)..."
+    if POE_IFACE="$(POE_STATE_FILE="${POE_STATE_FILE}" "${picker}" pick)"; then
+      log "Interfaz PoE seleccionada: ${POE_IFACE}"
+    else
+      warn "PoE no configurado (omitido en el menú o sin interfaces)."
+      return 0
+    fi
+  fi
+
+  log "Configurando red PoE en ${POE_IFACE}..."
+  POE_IFACE="${POE_IFACE}" POE_STATE_FILE="${POE_STATE_FILE}" \
+    "${REPO_ROOT}/scripts/oak/setup-poe-network.sh"
+}
+
+cmd_list_interfaces() {
+  local picker="${REPO_ROOT}/scripts/oak/network-interfaces.sh"
+  chmod +x "${picker}" 2>/dev/null || true
+  POE_STATE_FILE="${POE_STATE_FILE}" "${picker}" list
+  if [[ -f "${POE_STATE_FILE}" ]]; then
+    log "Guardado: ${POE_STATE_FILE}"
+    cat "${POE_STATE_FILE}" >&2
   fi
 }
 
@@ -158,6 +186,17 @@ print_summary() {
 }
 
 main() {
+  case "${1:-}" in
+    --list-interfaces|-l)
+      cmd_list_interfaces
+      exit 0
+      ;;
+    --help|-h)
+      sed -n '1,20p' "$0" >&2
+      exit 0
+      ;;
+  esac
+
   log "Repo: ${REPO_ROOT}"
   install_apt_packages
   install_nilo_node
@@ -168,6 +207,9 @@ main() {
   NONINTERACTIVE=1 "${REPO_ROOT}/scripts/deploy.sh" reload || warn "Reload falló — revisa logs"
 
   print_summary
+  if [[ -n "${POE_IFACE:-}" ]]; then
+    log "PoE: ping -c 2 169.254.1.222"
+  fi
 }
 
 main "$@"
