@@ -435,18 +435,23 @@ async def ensure_concurrent_ap_ready(
     netmask_prefix: int,
     hostapd_conf: str,
 ) -> str:
-    """Prepare virtual AP before hostapd -B; returns the interface name actually created."""
+    """Clear stale AP ifaces; hostapd creates the virtual AP via nl80211 (not iw)."""
     await kill_processes_by_cmdline(hostapd_conf)
-    created = await create_virtual_ap(sta_iface, ap_iface)
-    if not created:
-        raise RuntimeError(
-            f"Could not create virtual AP on {sta_iface} "
-            f"(tried {ap_interface_candidates(sta_iface, ap_iface)}). "
-            "Reboot the mini PC if the name is stuck."
-        )
-    await release_wifi_from_network_manager(created, disconnect=False)
-    await configure_ap_interface_ip(created, ap_ip, netmask_prefix)
-    return created
+    await cleanup_phy_ap_interfaces(sta_iface)
+    ap_name = resolve_ap_interface_name(sta_iface, ap_iface)
+    if await _interface_exists(ap_name):
+        await teardown_virtual_ap(ap_name)
+        await force_remove_iface(ap_name)
+        await asyncio.sleep(0.5)
+    await release_wifi_from_network_manager(sta_iface, disconnect=False)
+    if ap_name != sta_iface:
+        await release_wifi_from_network_manager(ap_name, disconnect=False)
+    logger.info(
+        "Ready for hostapd to create %s on %s (interface must not exist yet)",
+        ap_name,
+        sta_iface,
+    )
+    return ap_name
 
 
 async def plan_ap_interface(

@@ -17,6 +17,7 @@ from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_in
 from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_script
 from nilo_node.network.wifi_prepare import (
     ApInterfacePlan,
+    configure_ap_interface_ip,
     detect_operating_channel,
     ensure_concurrent_ap_ready,
     hw_mode_for_channel,
@@ -237,7 +238,21 @@ class WifiApManager:
             self._active_interface = actual_ap
         self._write_hostapd_config(ssid)
         self._write_dnsmasq_config()
-        await self._start_processes()
+        try:
+            await self._start_hostapd()
+        except RuntimeError as exc:
+            await self._capture_hostapd_debug(hostapd_conf)
+            raise RuntimeError(
+                f"{exc}\n(hostapd debug: {self._config_dir / 'hostapd-debug.log'})"
+            ) from exc
+        ap_iface = self._active_interface or plan.ap_interface
+        if plan.mode == "concurrent" and ap_iface != plan.sta_interface:
+            await configure_ap_interface_ip(
+                ap_iface, self._wifi.ap_ip, self._netmask_prefix()
+            )
+        if not self._binary_available("dnsmasq"):
+            raise RuntimeError("dnsmasq binary not found")
+        await self._start_dnsmasq()
         await asyncio.sleep(1.0)
         ap_error = await verify_ap_mode(self._active_interface or plan.ap_interface)
         if ap_error:
@@ -438,14 +453,31 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
 """
         path.write_text(content, encoding="utf-8")
 
-    async def _start_processes(self) -> None:
-        hostapd_conf = self._config_dir / "hostapd.conf"
-        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
+    async def _capture_hostapd_debug(self, hostapd_conf: str) -> None:
+        """Run hostapd -dd once and save full trace for diagnosis."""
+        debug_log = self._config_dir / "hostapd-debug.log"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hostapd",
+                "-dd",
+                hostapd_conf,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                stdout, _ = await proc.communicate()
+            debug_log.write_text(stdout.decode(errors="replace"), encoding="utf-8")
+            logger.error("hostapd debug trace written to %s", debug_log)
+        except OSError as exc:
+            logger.warning("Could not capture hostapd debug: %s", exc)
 
+    async def _start_hostapd(self) -> None:
+        hostapd_conf = self._config_dir / "hostapd.conf"
         if not self._binary_available("hostapd"):
             raise RuntimeError("hostapd binary not found")
-        if not self._binary_available("dnsmasq"):
-            raise RuntimeError("dnsmasq binary not found")
 
         hostapd_log = self._config_dir / "hostapd.log"
         pid_file = self._config_dir / "hostapd.pid"
@@ -455,7 +487,6 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
             except OSError:
                 pass
 
-        # Match scripts/wifi/wifi-ap-run.sh: hostapd -B (daemon), not foreground.
         proc = await asyncio.create_subprocess_exec(
             "hostapd",
             "-B",
@@ -478,7 +509,7 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
                 detail or f"hostapd -B failed (code {proc.returncode})"
             )
 
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.5)
         if not pid_file.is_file():
             log_tail = ""
             if hostapd_log.is_file():
@@ -497,6 +528,8 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
         self._hostapd_proc = None
         logger.info("hostapd daemon running (pid=%s)", self._hostapd_pid)
 
+    async def _start_dnsmasq(self) -> None:
+        dnsmasq_conf = self._config_dir / "dnsmasq.conf"
         dnsmasq_bin = Path("/usr/sbin/dnsmasq")
         if not dnsmasq_bin.is_file():
             dnsmasq_bin = Path(shutil.which("dnsmasq") or "dnsmasq")
