@@ -3,8 +3,9 @@
 #
 # Usage:
 #   sudo ./scripts/deploy.sh install              # first-time setup
-#   sudo ./scripts/deploy.sh update               # pull code + fast rebuild (cached deps)
-#   sudo ./scripts/deploy.sh reload               # restart container, no rebuild
+#   sudo ./scripts/deploy.sh update               # pull + rebuild + WiFi AP restart
+#   sudo ./scripts/deploy.sh reload               # restart container + WiFi AP
+#   sudo SKIP_WIFI_AP=1 ./scripts/deploy.sh update   # skip WiFi host/API steps
 #   sudo NILO_DOCKER_PULL=1 ./scripts/deploy.sh update   # also refresh base images
 #   ./scripts/deploy.sh status                    # health + container state
 #   ./scripts/deploy.sh logs [-f]                 # compose logs
@@ -209,6 +210,114 @@ ensure_wifi_ap_host() {
   NILO_WIFI_ALLOW_HOST_SCRIPTS=1 NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${script}" || warn "ensure-wifi-ap.sh failed (non-fatal)"
 }
 
+wifi_ap_backend() {
+  # Prints backend (container|host|auto) or exits 1 if WiFi AP should not run on host.
+  local config="${NILO_INSTALL_DIR}/config/nilo-node.yaml"
+  [[ -f "${config}" ]] || return 1
+  python3 - "${config}" <<'PY'
+import sys
+import yaml
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    wifi = (yaml.safe_load(fh) or {}).get("wifi") or {}
+
+if not wifi.get("enabled", False):
+    sys.exit(1)
+if wifi.get("hardware_ap") is False:
+    sys.exit(1)
+print(wifi.get("backend", "container"))
+PY
+}
+
+prepare_wifi_ap_interface() {
+  if [[ "${SKIP_WIFI_AP:-0}" == "1" ]]; then
+    log "SKIP_WIFI_AP=1 — omitiendo preparación de interfaz WiFi"
+    return 0
+  fi
+  local backend
+  backend="$(wifi_ap_backend 2>/dev/null)" || return 0
+
+  local prep="${NILO_INSTALL_DIR}/scripts/wifi/prepare-ap-interface.sh"
+  if [[ ! -f "${prep}" ]]; then
+    prep="${SOURCE_REPO_ROOT}/scripts/wifi/prepare-ap-interface.sh"
+  fi
+  [[ -f "${prep}" ]] || { warn "prepare-ap-interface.sh not found — skip"; return 0; }
+  chmod +x "${prep}" 2>/dev/null || true
+  log "Preparando interfaz WiFi AP (uap0 / NM)..."
+  NILO_WIFI_ALLOW_HOST_SCRIPTS=1 bash "${prep}" || warn "prepare-ap-interface.sh failed (non-fatal)"
+}
+
+restart_wifi_ap() {
+  if [[ "${SKIP_WIFI_AP:-0}" == "1" ]]; then
+    log "SKIP_WIFI_AP=1 — omitiendo reinicio WiFi AP"
+    return 0
+  fi
+  local backend
+  backend="$(wifi_ap_backend 2>/dev/null)" || {
+    log "WiFi AP deshabilitado en config — omitiendo reinicio"
+    return 0
+  }
+
+  if [[ "${backend}" == "host" ]]; then
+    local run="${NILO_INSTALL_DIR}/scripts/wifi/wifi-ap-run.sh"
+    if [[ ! -f "${run}" ]]; then
+      run="${SOURCE_REPO_ROOT}/scripts/wifi/wifi-ap-run.sh"
+    fi
+    [[ -f "${run}" ]] || { warn "wifi-ap-run.sh not found"; return 1; }
+    log "Reiniciando WiFi AP (backend=host)..."
+    NILO_WIFI_ALLOW_HOST_SCRIPTS=1 NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${run}" restart \
+      || warn "wifi-ap-run.sh restart failed"
+    return 0
+  fi
+
+  local token="${NILO_LOCAL_API_TOKEN:-}"
+  if [[ -z "${token}" ]]; then
+    warn "NILO_LOCAL_API_TOKEN no definido — no se puede reiniciar WiFi vía API"
+    return 1
+  fi
+
+  log "Reiniciando WiFi AP vía API..."
+  local http_code
+  http_code="$(curl -sf -o /tmp/nilo-wifi-restart.json -w '%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${token}" \
+    "http://127.0.0.1:${API_PORT}/api/v1/wifi/restart" 2>/dev/null || echo "000")"
+
+  if [[ "${http_code}" == "200" ]]; then
+    log "WiFi AP reiniciado correctamente"
+    if command_exists python3; then
+      python3 -m json.tool /tmp/nilo-wifi-restart.json 2>/dev/null | grep -E '"ssid"|"running"|"mock"|"ap_mode"|"ap_interface"|"error"' || true
+    fi
+    return 0
+  fi
+
+  warn "Reinicio WiFi AP falló (HTTP ${http_code}). Revisa: $0 logs | grep -i wifi"
+  return 1
+}
+
+print_wifi_summary() {
+  local backend
+  backend="$(wifi_ap_backend 2>/dev/null)" || return 0
+
+  log "── WiFi AP ──"
+  if curl -sf "http://127.0.0.1:${API_PORT}/api/v1/node/info" >/dev/null 2>&1; then
+    local info ssid ap_mode error
+    info="$(curl -sf "http://127.0.0.1:${API_PORT}/api/v1/node/info")"
+    ssid="$(echo "${info}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('wifi',{}).get('ssid','?'))" 2>/dev/null || echo "?")"
+    ap_mode="$(echo "${info}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('wifi',{}).get('ap_mode','?'))" 2>/dev/null || echo "?")"
+    error="$(echo "${info}" | python3 -c "import sys,json; d=json.load(sys.stdin); w=d.get('wifi',{}); print(w.get('error') or '')" 2>/dev/null || echo "")"
+    log "SSID:     ${ssid}"
+    log "Modo:     ${ap_mode} (backend=${backend})"
+    log "Portal:   http://192.168.50.1:${API_PORT}/setup/"
+    if [[ -n "${error}" ]]; then
+      warn "WiFi error: ${error}"
+    fi
+  else
+    warn "API no responde — no se pudo leer estado WiFi"
+  fi
+}
+
 ensure_env() {
   local env_file="${NILO_INSTALL_DIR}/.env"
   local example="${NILO_INSTALL_DIR}/deploy/env.example"
@@ -371,6 +480,7 @@ cmd_install() {
   apply_poe_camera_config
   apply_wifi_ap_config
   ensure_wifi_ap_host
+  prepare_wifi_ap_interface
   ensure_env
   load_env
   compose_up "${mode}"
@@ -380,6 +490,8 @@ cmd_install() {
   fi
 
   wait_healthy || true
+  restart_wifi_ap || true
+  print_wifi_summary || true
   log "Install complete. Install dir: ${NILO_INSTALL_DIR}"
   log "API token in: ${NILO_INSTALL_DIR}/.env (NILO_LOCAL_API_TOKEN)"
   log "Verify: curl -H \"Authorization: Bearer \$TOKEN\" http://127.0.0.1:${API_PORT}/api/v1/node/info"
@@ -394,9 +506,12 @@ cmd_reload() {
   apply_poe_camera_config
   apply_wifi_ap_config
   ensure_wifi_ap_host
+  prepare_wifi_ap_interface
   load_env
   compose_reload
   wait_healthy || true
+  restart_wifi_ap || true
+  print_wifi_summary || true
   log "Reload complete (no image rebuild)."
 }
 
@@ -416,9 +531,12 @@ cmd_update() {
   apply_poe_camera_config
   apply_wifi_ap_config
   ensure_wifi_ap_host
+  prepare_wifi_ap_interface
   load_env
   compose_update "${mode}"
   wait_healthy || true
+  restart_wifi_ap || true
+  print_wifi_summary || true
   log "Update complete."
 }
 

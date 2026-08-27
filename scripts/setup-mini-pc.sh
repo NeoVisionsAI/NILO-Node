@@ -78,17 +78,6 @@ install_apt_packages() {
     systemctl mask hostapd 2>/dev/null || true
     log "hostapd systemd desactivado (NILO-Node gestiona el AP en el contenedor)."
   fi
-
-  local prep="${REPO_ROOT}/scripts/wifi/ensure-wifi-ap.sh"
-  if [[ -f "${prep}" ]]; then
-    log "Configurando WiFi AP en host (uap0 unmanaged)..."
-    NILO_WIFI_ALLOW_HOST_SCRIPTS=1 NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${prep}" || warn "ensure-wifi-ap falló"
-  fi
-  prep="${REPO_ROOT}/scripts/wifi/prepare-ap-interface.sh"
-  if [[ -x "${prep}" ]]; then
-    log "Preparando interfaz virtual uap0..."
-    NILO_WIFI_ALLOW_HOST_SCRIPTS=1 "${prep}" || warn "prepare-ap-interface falló"
-  fi
 }
 
 prepare_env_credentials() {
@@ -231,7 +220,7 @@ main() {
   prepare_env_credentials
   optional_poe_network
 
-  log "Recargando servicio para aplicar .env..."
+  log "Recargando servicio (WiFi AP incluido en deploy)..."
   NONINTERACTIVE=1 "${REPO_ROOT}/scripts/deploy.sh" reload || warn "Reload falló — revisa logs"
 
   print_summary

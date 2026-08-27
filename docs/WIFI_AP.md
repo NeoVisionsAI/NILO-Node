@@ -17,16 +17,27 @@ Si el driver no soporta AP+STA, fallback automático a **modo dedicado** (AP en 
 - Scripts shell requieren **`NILO_WIFI_ALLOW_HOST_SCRIPTS=1`** — evita romper la WiFi del portátil por accidente.
 - **No ejecutar** `prepare-ap-interface.sh` ni `wifi-ap-run.sh` en el PC de desarrollo.
 
-## Despliegue en el mini PC
+## Despliegue en el mini PC (un solo comando)
 
 ```bash
-cd /opt/nilo-node   # o clone del repo
-sudo ./scripts/deploy.sh update
+cd /opt/nilo-node
+sudo ./scripts/deploy.sh update    # rebuild + preparar uap0 + reiniciar AP + resumen
+# o sin rebuild:
+sudo ./scripts/deploy.sh reload
 ```
 
-El deploy aplica `patch_wifi_ap.py` (`hardware_ap: true`, `ap_interface: uap0`) y `ensure-wifi-ap.sh` (uap0 unmanaged en NetworkManager).
+`deploy.sh` hace automáticamente:
 
-Reiniciar el AP:
+1. Parche WiFi en config (`hardware_ap`, `uap0`, …)
+2. `ensure-wifi-ap.sh` — uap0 unmanaged en NetworkManager
+3. `prepare-ap-interface.sh` — crear/reutilizar uap0
+4. Arrancar/reiniciar contenedor
+5. `POST /api/v1/wifi/restart` — aplicar hostapd+dnsmasq
+6. Imprimir SSID, modo y enlace al portal
+
+Para omitir pasos WiFi: `sudo SKIP_WIFI_AP=1 ./scripts/deploy.sh update`
+
+Reinicio manual (solo si hace falta):
 
 ```bash
 source /opt/nilo-node/.env
