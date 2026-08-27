@@ -44,14 +44,31 @@ install_apt_packages() {
   log "Instalando paquetes del sistema..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y \
-    ca-certificates curl gnupg git \
-    hostapd dnsmasq iproute2 wireless-tools iw \
-    bluez bluez-tools \
-    ffmpeg \
-    network-manager \
-    python3 python3-pip \
+
+  local required=(
+    ca-certificates curl gnupg git
+    hostapd dnsmasq iproute2 iw
+    bluez
+    ffmpeg
+    network-manager
+    python3 python3-pip
     jq
+  )
+  local optional=(
+    wireless-tools   # obsoleto en Debian 12+ / Ubuntu 24+ — sustituido por iw
+    bluez-tools      # no existe en algunas distros; bluetoothctl viene con bluez
+  )
+
+  apt-get install -y "${required[@]}"
+
+  for pkg in "${optional[@]}"; do
+    if apt-cache show "${pkg}" >/dev/null 2>&1; then
+      apt-get install -y "${pkg}" || warn "No se pudo instalar ${pkg} (opcional)"
+    else
+      warn "Paquete opcional no disponible en este sistema: ${pkg} (omitido)"
+    fi
+  done
+
   log "Paquetes instalados."
 
   # Debian/Ubuntu suelen enmascarar hostapd — lo habilitamos para AP manual
