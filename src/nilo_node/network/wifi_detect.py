@@ -46,15 +46,51 @@ def _wifi_from_iw_dev() -> list[str]:
     return names
 
 
-def detect_wifi_interface(preferred: str = "") -> str | None:
+def _iw_interface_type(iface: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["iw", "dev", iface, "info"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "type":
+            return parts[1]
+    return None
+
+
+def _is_virtual_ap_name(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.startswith("uap") or lowered.endswith("-ap") or lowered == "ap0"
+
+
+def detect_wifi_interface(
+    preferred: str = "",
+    *,
+    exclude: frozenset[str] | None = None,
+) -> str | None:
     """
-    Return the best WiFi interface name on this host.
+    Return the physical WiFi STA interface on this host (never a virtual AP like uap0).
 
     preferred: explicit name, or "auto"/"" to autodetect.
+    exclude: extra names to skip (e.g. configured ap_interface).
     """
+    skip = exclude or frozenset()
     pref = (preferred or "").strip().lower()
     if pref and pref not in ("auto", "default"):
-        if Path(f"/sys/class/net/{preferred}").exists():
+        if (
+            Path(f"/sys/class/net/{preferred}").exists()
+            and preferred not in skip
+            and not _is_virtual_ap_name(preferred)
+            and _iw_interface_type(preferred) not in ("AP", "__ap")
+        ):
             return preferred
         logger.warning("Configured WiFi interface %s not found — autodetecting", preferred)
 
@@ -65,11 +101,18 @@ def detect_wifi_interface(preferred: str = "") -> str | None:
             name = entry.name
             if _is_virtual_iface(name):
                 continue
+            if name in skip or _is_virtual_ap_name(name):
+                continue
             if _is_wireless_sysfs(name):
                 candidates.append(name)
 
     if not candidates:
-        candidates = _wifi_from_iw_dev()
+        for name in _wifi_from_iw_dev():
+            if name in skip or _is_virtual_ap_name(name):
+                continue
+            if _iw_interface_type(name) in ("AP", "__ap"):
+                continue
+            candidates.append(name)
 
     # De-duplicate preserving order
     seen: set[str] = set()
@@ -86,10 +129,16 @@ def detect_wifi_interface(preferred: str = "") -> str | None:
         logger.info("Auto-detected WiFi interface: %s", candidates[0])
         return candidates[0]
 
-    # Several WiFi NICs — pick predictable default (shortest name, e.g. wlan0 vs wlx...)
-    chosen = sorted(candidates, key=len)[0]
+    # Prefer managed/station NICs; never pick a leftover virtual AP.
+    managed = [
+        n
+        for n in candidates
+        if _iw_interface_type(n) in (None, "managed", "station")
+    ]
+    pool = managed or candidates
+    chosen = sorted(pool, key=len)[0]
     logger.info(
-        "Multiple WiFi interfaces %s — using %s for AP",
+        "Multiple WiFi interfaces %s — using %s for STA",
         candidates,
         chosen,
     )

@@ -57,6 +57,7 @@ class WifiApManager:
         self._backend: str = "container"
         self._hostapd_channel: int | None = None
         self._hostapd_hw_mode: str = "g"
+        self._lifecycle_lock = asyncio.Lock()
 
     def resolved_interface(self) -> str:
         if self._active_interface:
@@ -64,7 +65,11 @@ class WifiApManager:
         return resolve_wifi_interface(self._wifi.interface)
 
     def _detect_sta_interface(self) -> str | None:
-        return detect_wifi_interface(self._wifi.interface)
+        exclude: frozenset[str] = frozenset()
+        ap_name = (self._wifi.ap_interface or "").strip()
+        if ap_name:
+            exclude = frozenset({ap_name})
+        return detect_wifi_interface(self._wifi.interface, exclude=exclude)
 
     def ssid_for_node(self) -> str:
         short_id = self._node_id.replace("-", "")[:8]
@@ -94,6 +99,10 @@ class WifiApManager:
         )
 
     async def start(self) -> None:
+        async with self._lifecycle_lock:
+            await self._start_unlocked()
+
+    async def _start_unlocked(self) -> None:
         if not self._wifi.enabled or self._started:
             return
 
@@ -184,17 +193,18 @@ class WifiApManager:
         except Exception as exc:
             if concurrent and plan.mode == "concurrent":
                 logger.warning(
-                    "AP+STA concurrente no soportado (%s) — reintentando AP dedicado en %s",
+                    "AP+STA concurrente falló (%s) — reintentando tras reset de %s",
                     exc,
-                    sta_iface,
+                    self._wifi.ap_interface,
                 )
                 await self._kill_ap_processes()
                 if self._wifi.ap_interface:
                     await teardown_virtual_ap(self._wifi.ap_interface)
+                await asyncio.sleep(1.0)
                 plan = await plan_ap_interface(
                     sta_iface,
                     self._wifi.ap_interface,
-                    concurrent_sta_ap=False,
+                    concurrent_sta_ap=True,
                     country_code=self._wifi.country_code,
                     ap_ip=self._wifi.ap_ip,
                     netmask_prefix=self._netmask_prefix(),
@@ -243,6 +253,10 @@ class WifiApManager:
             await pkill_pattern(str(dnsmasq_conf))
 
     async def stop(self) -> None:
+        async with self._lifecycle_lock:
+            await self._stop_unlocked()
+
+    async def _stop_unlocked(self) -> None:
         ap_iface = self._active_interface
         sta_iface = self._sta_interface
         ap_mode = self._ap_mode
@@ -293,10 +307,11 @@ class WifiApManager:
             await run_host_wifi_script(script, "stop")
 
     async def restart(self) -> WifiApStatus:
-        await self.stop()
-        self._error = None
-        await self.start()
-        return self.get_status()
+        async with self._lifecycle_lock:
+            await self._stop_unlocked()
+            self._error = None
+            await self._start_unlocked()
+            return self.get_status()
 
     def _netmask_prefix(self) -> int:
         parts = self._wifi.netmask.split(".")

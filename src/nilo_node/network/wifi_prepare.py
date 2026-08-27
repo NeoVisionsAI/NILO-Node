@@ -224,14 +224,15 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
     if await _interface_exists(ap_iface):
         iface_type = await _interface_type(ap_iface)
         if iface_type in ("AP", "__ap"):
-            logger.info("Reusing existing virtual AP %s (type %s)", ap_iface, iface_type)
-            return True
-        logger.warning(
-            "Virtual AP %s exists but type is %s — recreating",
-            ap_iface,
-            iface_type or "unknown",
-        )
-        await teardown_virtual_ap(ap_iface)
+            logger.info("Replacing existing virtual AP %s before hostapd", ap_iface)
+            await teardown_virtual_ap(ap_iface)
+        else:
+            logger.warning(
+                "Virtual AP %s exists but type is %s — recreating",
+                ap_iface,
+                iface_type or "unknown",
+            )
+            await teardown_virtual_ap(ap_iface)
 
     async def _try_add(args: list[str]) -> tuple[int, str]:
         return await _run_cmd([iw, *args, "interface", "add", ap_iface, "type", "__ap"], optional=True)

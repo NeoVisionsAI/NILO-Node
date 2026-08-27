@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
+from nilo_node.network.wifi_detect import (
+    _is_virtual_ap_name,
+    detect_wifi_interface,
+    resolve_wifi_interface,
+)
+
+
+def test_is_virtual_ap_name() -> None:
+    assert _is_virtual_ap_name("uap0")
+    assert _is_virtual_ap_name("wlan0-ap")
+    assert not _is_virtual_ap_name("wlp3s0")
 
 
 def test_auto_returns_string_or_none() -> None:
