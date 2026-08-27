@@ -149,6 +149,16 @@ class WifiApManager:
                 self._active_interface,
             )
         except Exception as exc:
+            await self._kill_ap_processes()
+            if (
+                self._active_interface
+                and self._sta_interface
+                and self._active_interface != self._sta_interface
+            ):
+                await teardown_virtual_ap(self._active_interface)
+            self._active_interface = None
+            self._sta_interface = None
+            self._ap_mode = None
             self._error = str(exc)
             if self._wifi.mock_when_unavailable:
                 self._mock = True
@@ -209,6 +219,25 @@ class WifiApManager:
             raise RuntimeError(ap_error)
 
     async def _kill_ap_processes(self) -> None:
+        hostapd_conf = self._config_dir / "hostapd.conf"
+        if hostapd_conf.is_file():
+            await asyncio.create_subprocess_exec(
+                "pkill",
+                "-f",
+                str(hostapd_conf),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.sleep(0.2)
+        if self._active_interface:
+            await asyncio.create_subprocess_exec(
+                "pkill",
+                "-f",
+                f"interface={self._active_interface}",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.sleep(0.2)
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),
             (self._hostapd_proc, "hostapd"),
@@ -225,23 +254,22 @@ class WifiApManager:
         self._dnsmasq_proc = None
 
     async def stop(self) -> None:
-        if not self._started:
-            return
         ap_iface = self._active_interface
         sta_iface = self._sta_interface
         ap_mode = self._ap_mode
-        if self._backend == "host":
+        if self._started and self._backend == "host":
             await self._stop_via_host_script()
         await self._kill_ap_processes()
         if (
-            ap_mode == "concurrent"
-            and ap_iface
+            ap_iface
             and sta_iface
             and ap_iface != sta_iface
+            and ap_mode in ("concurrent", None)
         ):
             await teardown_virtual_ap(ap_iface)
         self._started = False
         self._mock = False
+        self._error = None
         self._active_interface = None
         self._sta_interface = None
         self._ap_mode = None

@@ -250,9 +250,15 @@ prepare_wifi_ap_interface() {
 }
 
 cleanup_stale_uap0() {
+  # Solo cuando el contenedor NO está en marcha. Borrar uap0 con hostapd activo
+  # deja la interfaz en estado inconsistente ("Name not unique on network").
   command -v iw >/dev/null 2>&1 || return 0
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nilo-node; then
+    return 0
+  fi
   if iw dev uap0 info >/dev/null 2>&1; then
-    log "Eliminando uap0 previo (evita 'Name not unique')..."
+    log "Eliminando uap0 huérfano (contenedor parado)..."
+    ip link set uap0 down 2>/dev/null || true
     iw dev uap0 del 2>/dev/null || true
     sleep 1
   fi
@@ -294,7 +300,6 @@ restart_wifi_ap() {
   fi
 
   sleep 3
-  cleanup_stale_uap0
 
   log "Reiniciando WiFi AP vía API..."
   local http_code
@@ -576,6 +581,7 @@ cmd_install() {
   prepare_wifi_ap_interface
   ensure_env_secrets
   load_env
+  cleanup_stale_uap0
   compose_up "${mode}"
 
   if [[ "${INSTALL_SYSTEMD}" == "1" ]]; then
@@ -628,6 +634,7 @@ cmd_update() {
   prepare_wifi_ap_interface
   ensure_env_secrets
   load_env
+  cleanup_stale_uap0
   compose_update "${mode}"
   wait_healthy || true
   restart_wifi_ap || true

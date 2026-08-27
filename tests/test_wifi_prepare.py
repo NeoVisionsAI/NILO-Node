@@ -37,11 +37,16 @@ async def test_create_virtual_ap_reuses_name_not_unique() -> None:
         with patch(
             "nilo_node.network.wifi_prepare._interface_exists",
             new_callable=AsyncMock,
-            side_effect=[False, True],
+            side_effect=[False, True, True, False, True],
         ):
-            run_cmd.return_value = (2, "RTNETLINK answers: Name not unique on network")
-            with patch("nilo_node.network.wifi_prepare.shutil.which", return_value="/usr/sbin/iw"):
-                assert await _create_virtual_ap("wlp3s0", "uap0") is True
+            with patch(
+                "nilo_node.network.wifi_prepare._interface_type",
+                new_callable=AsyncMock,
+                return_value="AP",
+            ):
+                run_cmd.return_value = (2, "RTNETLINK answers: Name not unique on network")
+                with patch("nilo_node.network.wifi_prepare.shutil.which", return_value="/usr/sbin/iw"):
+                    assert await _create_virtual_ap("wlp3s0", "uap0") is True
 
 
 @pytest.mark.asyncio

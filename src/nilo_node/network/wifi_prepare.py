@@ -137,13 +137,50 @@ async def _interface_exists(iface: str) -> bool:
     return Path(f"/sys/class/net/{iface}").exists()
 
 
+async def _interface_type(iface: str) -> str | None:
+    iw = shutil.which("iw")
+    if not iw:
+        return None
+    code, text = await _run_cmd([iw, "dev", iface, "info"], optional=True)
+    if code != 0:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "type":
+            return parts[1]
+    return None
+
+
+async def _kill_hostapd_for_interface(ap_iface: str) -> None:
+    """Stop hostapd processes that may still hold the virtual AP interface."""
+    for pattern in (
+        f"interface={ap_iface}",
+        f"dev {ap_iface} ",
+        ap_iface,
+    ):
+        await _run_cmd(["pkill", "-f", pattern], optional=True)
+    await asyncio.sleep(0.3)
+
+
 async def teardown_virtual_ap(ap_iface: str) -> None:
     """Remove virtual AP interface (safe if missing)."""
     iw = shutil.which("iw")
     if not iw or not await _interface_exists(ap_iface):
         return
+    await _kill_hostapd_for_interface(ap_iface)
+    ip_cmd = shutil.which("ip")
+    if ip_cmd:
+        await _run_cmd([ip_cmd, "link", "set", ap_iface, "down"], optional=True)
+        await _run_cmd([ip_cmd, "addr", "flush", "dev", ap_iface], optional=True)
     logger.info("Removing virtual AP interface %s", ap_iface)
-    await _run_cmd([iw, "dev", ap_iface, "del"], optional=True)
+    for attempt in range(3):
+        code, text = await _run_cmd([iw, "dev", ap_iface, "del"], optional=True)
+        if code == 0 or not await _interface_exists(ap_iface):
+            break
+        if attempt < 2:
+            await asyncio.sleep(0.5)
+        elif text:
+            logger.warning("Could not delete %s: %s", ap_iface, text)
     await asyncio.sleep(0.5)
 
 
@@ -181,8 +218,16 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
         return False
 
     if await _interface_exists(ap_iface):
-        logger.info("Reusing existing virtual AP %s", ap_iface)
-        return True
+        iface_type = await _interface_type(ap_iface)
+        if iface_type in ("AP", "__ap"):
+            logger.info("Reusing existing virtual AP %s (type %s)", ap_iface, iface_type)
+            return True
+        logger.warning(
+            "Virtual AP %s exists but type is %s — recreating",
+            ap_iface,
+            iface_type or "unknown",
+        )
+        await teardown_virtual_ap(ap_iface)
 
     async def _try_add(args: list[str]) -> tuple[int, str]:
         return await _run_cmd([iw, *args, "interface", "add", ap_iface, "type", "__ap"], optional=True)
@@ -202,10 +247,12 @@ async def _create_virtual_ap(sta_iface: str, ap_iface: str) -> bool:
     if rtnetlink_error_is_benign(text):
         await asyncio.sleep(0.5)
         if await _interface_exists(ap_iface):
-            logger.info("Virtual AP %s present after RTNETLINK conflict — reusing", ap_iface)
-            return True
+            iface_type = await _interface_type(ap_iface)
+            if iface_type in ("AP", "__ap"):
+                logger.info("Virtual AP %s present after RTNETLINK conflict — reusing", ap_iface)
+                return True
         await teardown_virtual_ap(ap_iface)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
         code2, text2 = await _try_add(["dev", sta_iface])
         if code2 == 0 or await _interface_exists(ap_iface):
             return True
@@ -246,7 +293,7 @@ async def configure_ap_interface_ip(ap_iface: str, ap_ip: str, prefix: int) -> N
         return
     cidr = f"{ap_ip}/{prefix}"
     for cmd in (
-        [ip_cmd, "link", "set", ap_iface, "up"],
+        [ip_cmd, "link", "set", ap_iface, "down"],
         [ip_cmd, "addr", "flush", "dev", ap_iface],
         [ip_cmd, "addr", "replace", cidr, "dev", ap_iface],
     ):
