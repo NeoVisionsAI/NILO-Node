@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -48,6 +50,7 @@ class WifiApManager:
         self._config_dir = storage_base / "wifi"
         self._node_id = node_id
         self._hostapd_proc: asyncio.subprocess.Process | None = None
+        self._hostapd_pid: int | None = None
         self._dnsmasq_proc: asyncio.subprocess.Process | None = None
         self._mock = False
         self._error: str | None = None
@@ -80,10 +83,7 @@ class WifiApManager:
         running = self._started and not self._error and (
             self._mock
             or self._backend == "host"
-            or (
-                self._hostapd_proc is not None
-                and self._hostapd_proc.returncode is None
-            )
+            or self._hostapd_is_running()
         )
         iface = self._active_interface or self.resolved_interface()
         return WifiApStatus(
@@ -242,7 +242,51 @@ class WifiApManager:
         if ap_error:
             raise RuntimeError(ap_error)
 
+    def _hostapd_is_running(self) -> bool:
+        if self._hostapd_proc is not None and self._hostapd_proc.returncode is None:
+            return True
+        if self._hostapd_pid is not None:
+            try:
+                os.kill(self._hostapd_pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+        pid_file = self._config_dir / "hostapd.pid"
+        if pid_file.is_file():
+            try:
+                os.kill(int(pid_file.read_text().strip()), 0)
+                return True
+            except (ProcessLookupError, ValueError):
+                return False
+        return False
+
+    async def _kill_hostapd_daemon(self) -> None:
+        hostapd_conf = self._config_dir / "hostapd.conf"
+        pid_file = self._config_dir / "hostapd.pid"
+        pid_candidates: list[int] = []
+        if self._hostapd_pid is not None:
+            pid_candidates.append(self._hostapd_pid)
+        if pid_file.is_file():
+            try:
+                pid_candidates.append(int(pid_file.read_text().strip()))
+            except ValueError:
+                pass
+        for pid in dict.fromkeys(pid_candidates):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        await asyncio.sleep(0.3)
+        if hostapd_conf.is_file():
+            await pkill_pattern(str(hostapd_conf))
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._hostapd_pid = None
+
     async def _kill_ap_processes(self) -> None:
+        await self._kill_hostapd_daemon()
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),
             (self._hostapd_proc, "hostapd"),
@@ -258,10 +302,7 @@ class WifiApManager:
         self._hostapd_proc = None
         self._dnsmasq_proc = None
 
-        hostapd_conf = self._config_dir / "hostapd.conf"
         dnsmasq_conf = self._config_dir / "dnsmasq.conf"
-        if hostapd_conf.is_file():
-            await pkill_pattern(str(hostapd_conf))
         if dnsmasq_conf.is_file():
             await pkill_pattern(str(dnsmasq_conf))
 
@@ -406,35 +447,54 @@ dhcp-option=option:dns-server,{self._wifi.ap_ip}
             raise RuntimeError("dnsmasq binary not found")
 
         hostapd_log = self._config_dir / "hostapd.log"
-        try:
-            hostapd_log.unlink(missing_ok=True)
-        except OSError:
-            pass
+        pid_file = self._config_dir / "hostapd.pid"
+        for path in (hostapd_log, pid_file):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-        self._hostapd_proc = await asyncio.create_subprocess_exec(
+        # Match scripts/wifi/wifi-ap-run.sh: hostapd -B (daemon), not foreground.
+        proc = await asyncio.create_subprocess_exec(
             "hostapd",
+            "-B",
+            "-P",
+            str(pid_file),
             "-f",
             str(hostapd_log),
             str(hostapd_conf),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        await asyncio.sleep(1.5)
-        if self._hostapd_proc.returncode is not None:
-            stderr = await self._hostapd_proc.stderr.read() if self._hostapd_proc.stderr else b""
-            detail = stderr.decode(errors="replace").strip()
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            detail = stdout.decode(errors="replace").strip()
             if hostapd_log.is_file():
                 log_tail = hostapd_log.read_text(encoding="utf-8", errors="replace").strip()
                 if log_tail:
-                    detail = detail or log_tail.splitlines()[-1]
-                    if len(log_tail) > 200:
-                        detail = f"{detail}\n{log_tail[-800:]}"
-            if not detail:
-                detail = f"hostapd exited (code {self._hostapd_proc.returncode})"
+                    detail = detail or log_tail
             raise RuntimeError(
-                f"{detail} — config: {hostapd_conf}, interface: "
-                f"{self._active_interface}, mode: {self._ap_mode}"
+                detail or f"hostapd -B failed (code {proc.returncode})"
             )
+
+        await asyncio.sleep(1.0)
+        if not pid_file.is_file():
+            log_tail = ""
+            if hostapd_log.is_file():
+                log_tail = hostapd_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(log_tail or "hostapd did not start (missing pid file)")
+
+        try:
+            self._hostapd_pid = int(pid_file.read_text().strip())
+            os.kill(self._hostapd_pid, 0)
+        except (ProcessLookupError, ValueError) as exc:
+            log_tail = ""
+            if hostapd_log.is_file():
+                log_tail = hostapd_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(log_tail or "hostapd daemon not running after start") from exc
+
+        self._hostapd_proc = None
+        logger.info("hostapd daemon running (pid=%s)", self._hostapd_pid)
 
         dnsmasq_bin = Path("/usr/sbin/dnsmasq")
         if not dnsmasq_bin.is_file():

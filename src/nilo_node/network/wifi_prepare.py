@@ -327,15 +327,15 @@ async def prepare_dedicated_ap(sta_iface: str) -> None:
 
 
 async def configure_ap_interface_ip(ap_iface: str, ap_ip: str, prefix: int) -> None:
+    """Assign AP IP (interface should already be UP — matches wifi-ap-run.sh)."""
     ip_cmd = shutil.which("ip")
     if not ip_cmd:
         return
     cidr = f"{ap_ip}/{prefix}"
     for cmd in (
-        [ip_cmd, "link", "set", ap_iface, "down"],
+        [ip_cmd, "link", "set", ap_iface, "up"],
         [ip_cmd, "addr", "flush", "dev", ap_iface],
         [ip_cmd, "addr", "replace", cidr, "dev", ap_iface],
-        [ip_cmd, "link", "set", ap_iface, "up"],
     ):
         _, err = await _run_cmd(cmd, optional=True)
         if err and not rtnetlink_error_is_benign(err):
@@ -350,10 +350,10 @@ async def ensure_concurrent_ap_ready(
     netmask_prefix: int,
     hostapd_conf: str,
 ) -> None:
-    """Reset virtual AP immediately before hostapd (matches working host script flow)."""
+    """Prepare uap0 exactly like scripts/wifi/wifi-ap-run.sh before hostapd -B."""
     await kill_processes_by_cmdline(hostapd_conf)
     await teardown_virtual_ap(ap_iface)
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(0.5)
     if not await _create_virtual_ap(sta_iface, ap_iface):
         raise RuntimeError(f"Could not create virtual AP {ap_iface} on {sta_iface}")
     await release_wifi_from_network_manager(ap_iface, disconnect=False)
