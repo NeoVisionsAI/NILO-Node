@@ -143,7 +143,7 @@ mqtt:
   reconnect_interval_sec: 10
   qos: 1
   mock_when_unavailable: true
-
+ 
 cardmed:
   max_upload_size_mb: 10
   allowed_mime_types: ["image/jpeg", "image/png", "image/webp"]
