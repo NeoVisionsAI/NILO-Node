@@ -150,7 +150,12 @@ class WifiConfig(BaseModel):
     enabled: bool = True
     ssid_prefix: str = "nilo-node"
     password: str = ""
-    interface: str = "auto"
+    interface: str = "auto"  # physical STA NIC (wlp3s0 / wlan0)
+    ap_interface: str = "uap0"  # virtual AP iface (NiloCardmed-style); empty = dedicated AP on interface
+    concurrent_sta_ap: bool = True
+    hardware_ap: bool = True  # false on dev PCs — prevents nmcli/iw/hostapd on your laptop
+    backend: Literal["auto", "container", "host"] = "auto"
+    host_script_path: str = "/host/scripts/wifi/wifi-ap-run.sh"
     channel: int = 6
     country_code: str = "ES"
     mock_when_unavailable: bool = True
@@ -158,7 +163,6 @@ class WifiConfig(BaseModel):
     dhcp_range_end: str = "192.168.50.100"
     ap_ip: str = "192.168.50.1"
     netmask: str = "255.255.255.0"
-    # Ethernet stays on DHCP/static for internet; AP is isolated on wlan0.
     configure_interface_ip: bool = True
 
 

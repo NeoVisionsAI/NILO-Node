@@ -17,6 +17,7 @@ services:
       # USB optional (dev only); PoE uses host network — see docs/POE_SETUP.md
       - /dev/bus/usb:/dev/bus/usb
       - /var/run/dbus:/var/run/dbus
+      - ./scripts/wifi:/host/scripts/wifi:ro
     devices:
       - /dev/snd:/dev/snd
     environment:

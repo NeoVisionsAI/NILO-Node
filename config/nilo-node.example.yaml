@@ -113,10 +113,15 @@ replication:
       method: "copy"
 
 wifi:
-  enabled: true                    # AP for setup portal + Cardmed (Ethernet = internet)
+  enabled: true                    # AP for setup portal + Cardmed
   ssid_prefix: "nilo-node"
   password: "${NILO_WIFI_PASSWORD}"
-  interface: "auto"                 # auto-detect wlp3s0 / wlan0 / etc.
+  interface: "auto"                 # physical STA NIC (wlp3s0 / wlan0)
+  ap_interface: "uap0"              # virtual AP (NiloCardmed-style); "" = dedicated AP on interface
+  concurrent_sta_ap: true
+  hardware_ap: true                 # MUST stay true on mini PC; false on dev laptops
+  backend: "container"
+  host_script_path: "/host/scripts/wifi/wifi-ap-run.sh"
   channel: 6
   country_code: "ES"
   mock_when_unavailable: true

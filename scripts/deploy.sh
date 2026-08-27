@@ -198,6 +198,17 @@ apply_wifi_ap_config() {
   python3 "${patch}" "${config}"
 }
 
+ensure_wifi_ap_host() {
+  local script="${NILO_INSTALL_DIR}/scripts/wifi/ensure-wifi-ap.sh"
+  if [[ ! -f "${script}" ]]; then
+    script="${SOURCE_REPO_ROOT}/scripts/wifi/ensure-wifi-ap.sh"
+  fi
+  [[ -f "${script}" ]] || { warn "ensure-wifi-ap.sh not found — skip host WiFi setup"; return 0; }
+  chmod +x "${script}" "${SOURCE_REPO_ROOT}/scripts/wifi/"*.sh 2>/dev/null || true
+  log "Host WiFi AP prerequisites (uap0 unmanaged, NM)..."
+  NILO_WIFI_ALLOW_HOST_SCRIPTS=1 NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${script}" || warn "ensure-wifi-ap.sh failed (non-fatal)"
+}
+
 ensure_env() {
   local env_file="${NILO_INSTALL_DIR}/.env"
   local example="${NILO_INSTALL_DIR}/deploy/env.example"
@@ -359,6 +370,7 @@ cmd_install() {
   ensure_config
   apply_poe_camera_config
   apply_wifi_ap_config
+  ensure_wifi_ap_host
   ensure_env
   load_env
   compose_up "${mode}"
@@ -381,6 +393,7 @@ cmd_reload() {
   setup_compose_file "${mode}"
   apply_poe_camera_config
   apply_wifi_ap_config
+  ensure_wifi_ap_host
   load_env
   compose_reload
   wait_healthy || true
@@ -402,6 +415,7 @@ cmd_update() {
   setup_compose_file "${mode}"
   apply_poe_camera_config
   apply_wifi_ap_config
+  ensure_wifi_ap_host
   load_env
   compose_update "${mode}"
   wait_healthy || true

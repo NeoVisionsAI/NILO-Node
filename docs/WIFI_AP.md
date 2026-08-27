@@ -1,0 +1,75 @@
+# WiFi AP — mini PC (no ejecutar en PC de desarrollo)
+
+NILO-Node expone un AP para tablet/Cardmed (`nilo-node-XXXXXXXX`) en **`192.168.50.1`**, inspirado en el stack NiloCardmed (uap0 + STA concurrente).
+
+## Arquitectura
+
+| Interfaz | Rol |
+|----------|-----|
+| `wlp3s0` / `wlan0` | STA — puede seguir conectada a otra WiFi |
+| `uap0` | AP virtual — red `nilo-node-*` + portal `/setup/` |
+
+Si el driver no soporta AP+STA, fallback automático a **modo dedicado** (AP en la tarjeta física, desconecta STA).
+
+## Seguridad en desarrollo
+
+- **`wifi.hardware_ap: false`** en `nilo-node.dev.yaml` — el contenedor local **no toca** nmcli/iw/hostapd.
+- Scripts shell requieren **`NILO_WIFI_ALLOW_HOST_SCRIPTS=1`** — evita romper la WiFi del portátil por accidente.
+- **No ejecutar** `prepare-ap-interface.sh` ni `wifi-ap-run.sh` en el PC de desarrollo.
+
+## Despliegue en el mini PC
+
+```bash
+cd /opt/nilo-node   # o clone del repo
+sudo ./scripts/deploy.sh update
+```
+
+El deploy aplica `patch_wifi_ap.py` (`hardware_ap: true`, `ap_interface: uap0`) y `ensure-wifi-ap.sh` (uap0 unmanaged en NetworkManager).
+
+Reiniciar el AP:
+
+```bash
+source /opt/nilo-node/.env
+curl -X POST -H "Authorization: Bearer $NILO_LOCAL_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/wifi/restart
+```
+
+## Verificación
+
+```bash
+# API — buscar ap_mode: "concurrent" y ap_interface: "uap0"
+curl -s http://127.0.0.1:8080/api/v1/node/info | python3 -m json.tool
+
+# Solo lectura — seguro en mini PC
+sudo ./scripts/wifi/diagnose-ap.sh wlp3s0
+
+# Debe mostrar type AP en uap0
+iw dev uap0 info
+```
+
+## Config YAML (`wifi.*`)
+
+| Campo | Mini PC | Dev laptop |
+|-------|---------|------------|
+| `enabled` | `true` | `false` |
+| `hardware_ap` | `true` | `false` |
+| `ap_interface` | `uap0` | — |
+| `concurrent_sta_ap` | `true` | — |
+| `backend` | `container` (default) o `host` | — |
+
+## Backend `host` (opcional, estilo NiloCardmed)
+
+Si prefieres que hostapd corra en el host vía systemd:
+
+1. En config: `wifi.backend: "host"`
+2. `sudo systemctl enable --now nilo-node-wifi-ap` (instalado por `ensure-wifi-ap.sh`)
+3. **No** usar `backend: host` y contenedor a la vez — elige uno.
+
+## Errores frecuentes
+
+| Síntoma | Causa | Acción |
+|---------|-------|--------|
+| API `running: true` pero no se ve la red | hostapd vivo, interfaz no en modo AP | `diagnose-ap.sh`; comprobar `iw dev uap0 info` |
+| Solo modo `dedicated` | Driver sin AP+STA | Normal en algunos chipsets x86; Ethernet = internet |
+| Tablet sin IP | dnsmasq | logs contenedor; `wifi-ap-run.sh repair` si backend host |
+| WiFi del portátil rota | Script WiFi en dev | Usar `hardware_ap: false`; no exportar `NILO_WIFI_ALLOW_HOST_SCRIPTS` |

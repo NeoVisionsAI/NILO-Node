@@ -8,10 +8,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from nilo_node.config.models import AppConfig, WifiConfig
 from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
+from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_script
+from nilo_node.network.wifi_prepare import plan_ap_interface, verify_ap_mode
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,9 @@ class WifiApStatus(BaseModel):
     mock: bool = False
     ssid: str | None = None
     interface: str = "wlan0"
+    sta_interface: str | None = None
+    ap_interface: str | None = None
+    ap_mode: str | None = None  # concurrent | dedicated | mock
     ap_ip: str = "192.168.50.1"
     error: str | None = None
 
@@ -39,16 +44,17 @@ class WifiApManager:
         self._error: str | None = None
         self._started = False
         self._active_interface: str | None = None
+        self._sta_interface: str | None = None
+        self._ap_mode: str | None = None
+        self._backend: str = "container"
 
     def resolved_interface(self) -> str:
         if self._active_interface:
             return self._active_interface
         return resolve_wifi_interface(self._wifi.interface)
 
-    def _resolve_and_bind_interface(self) -> str | None:
-        iface = detect_wifi_interface(self._wifi.interface)
-        self._active_interface = iface
-        return iface
+    def _detect_sta_interface(self) -> str | None:
+        return detect_wifi_interface(self._wifi.interface)
 
     def ssid_for_node(self) -> str:
         short_id = self._node_id.replace("-", "")[:8]
@@ -57,17 +63,22 @@ class WifiApManager:
     def get_status(self) -> WifiApStatus:
         running = self._started and (
             self._mock
+            or self._backend == "host"
             or (
                 self._hostapd_proc is not None
                 and self._hostapd_proc.returncode is None
             )
         )
+        iface = self._active_interface or self.resolved_interface()
         return WifiApStatus(
             enabled=self._wifi.enabled,
             running=running,
             mock=self._mock,
             ssid=self.ssid_for_node() if self._wifi.enabled else None,
-            interface=self.resolved_interface() if self._wifi.enabled else self._wifi.interface,
+            interface=iface if self._wifi.enabled else self._wifi.interface,
+            sta_interface=self._sta_interface,
+            ap_interface=self._active_interface,
+            ap_mode=self._ap_mode,
             ap_ip=self._wifi.ap_ip,
             error=self._error,
         )
@@ -79,7 +90,7 @@ class WifiApManager:
         self._config_dir.mkdir(parents=True, exist_ok=True)
         ssid = self.ssid_for_node()
 
-        iface = self._resolve_and_bind_interface()
+        iface = self._detect_sta_interface()
         if iface is None:
             self._error = "No WiFi interface found on host"
             if self._wifi.mock_when_unavailable:
@@ -89,10 +100,25 @@ class WifiApManager:
                 return
             raise RuntimeError(self._error)
 
-        self._write_hostapd_config(ssid)
-        self._write_dnsmasq_config()
+        if not self._wifi.hardware_ap:
+            self._mock = True
+            self._started = True
+            self._ap_mode = "mock"
+            self._sta_interface = iface
+            logger.warning(
+                "WiFi AP mock mode — wifi.hardware_ap=false (dev safety; enable on mini PC only)"
+            )
+            return
 
-        if self._wifi.mock_when_unavailable and not self._interface_available():
+        self._backend = resolve_wifi_backend(
+            self._wifi.backend,
+            self._wifi.host_script_path,
+        )
+        if self._backend == "host":
+            await self._start_via_host_script()
+            return
+
+        if self._wifi.mock_when_unavailable and not self._interface_available(iface):
             self._mock = True
             self._started = True
             logger.info(
@@ -103,10 +129,30 @@ class WifiApManager:
             return
 
         try:
+            plan = await plan_ap_interface(
+                iface,
+                self._wifi.ap_interface,
+                concurrent_sta_ap=self._wifi.concurrent_sta_ap,
+                country_code=self._wifi.country_code,
+            )
+            self._sta_interface = plan.sta_interface
+            self._active_interface = plan.ap_interface
+            self._ap_mode = plan.mode
+            self._write_hostapd_config(ssid)
+            self._write_dnsmasq_config()
             await self._configure_interface()
             await self._start_processes()
+            ap_error = await verify_ap_mode(plan.ap_interface)
+            if ap_error:
+                raise RuntimeError(ap_error)
             self._started = True
-            logger.info("WiFi AP started: ssid=%s interface=%s", ssid, iface)
+            logger.info(
+                "WiFi AP started: ssid=%s mode=%s sta=%s ap=%s",
+                ssid,
+                plan.mode,
+                plan.sta_interface,
+                plan.ap_interface,
+            )
         except Exception as exc:
             self._error = str(exc)
             if self._wifi.mock_when_unavailable:
@@ -120,6 +166,8 @@ class WifiApManager:
     async def stop(self) -> None:
         if not self._started:
             return
+        if self._backend == "host":
+            await self._stop_via_host_script()
         for proc, name in (
             (self._dnsmasq_proc, "dnsmasq"),
             (self._hostapd_proc, "hostapd"),
@@ -137,6 +185,35 @@ class WifiApManager:
         self._started = False
         self._mock = False
         self._active_interface = None
+        self._sta_interface = None
+        self._ap_mode = None
+        self._backend = "container"
+
+    async def _start_via_host_script(self) -> None:
+        script = self._wifi.host_script_path
+        try:
+            code, output = await run_host_wifi_script(script, "start")
+            if code != 0:
+                raise RuntimeError(output or f"Host WiFi script failed ({code})")
+            self._started = True
+            self._mock = False
+            self._ap_mode = "host"
+            self._sta_interface = self._detect_sta_interface()
+            self._active_interface = self._wifi.ap_interface or self._sta_interface
+            logger.info("WiFi AP started via host script: %s", script)
+        except Exception as exc:
+            self._error = str(exc)
+            if self._wifi.mock_when_unavailable:
+                self._mock = True
+                self._started = True
+                logger.warning("WiFi AP host script failed — mock mode: %s", exc)
+            else:
+                raise
+
+    async def _stop_via_host_script(self) -> None:
+        script = self._wifi.host_script_path
+        if Path(script).is_file():
+            await run_host_wifi_script(script, "stop")
 
     async def restart(self) -> WifiApStatus:
         await self.stop()
@@ -179,9 +256,9 @@ class WifiApManager:
             if proc.returncode != 0 and cmd[1] == "addr" and cmd[2] == "flush":
                 logger.debug("Interface flush skipped: %s", stderr.decode().strip())
 
-    def _interface_available(self) -> bool:
-        iface = self._active_interface or self.resolved_interface()
-        return Path(f"/sys/class/net/{iface}").exists()
+    def _interface_available(self, iface: str | None = None) -> bool:
+        name = iface or self._sta_interface or resolve_wifi_interface(self._wifi.interface)
+        return Path(f"/sys/class/net/{name}").exists()
 
     def _write_hostapd_config(self, ssid: str) -> None:
         path = self._config_dir / "hostapd.conf"
@@ -192,9 +269,12 @@ class WifiApManager:
             f"ssid={ssid}",
             f"channel={self._wifi.channel}",
             f"country_code={self._wifi.country_code}",
+            "ieee80211d=1",
             "hw_mode=g",
             "ieee80211n=1",
             "wmm_enabled=1",
+            "auth_algs=1",
+            "ignore_broadcast_ssid=0",
         ]
         if self._wifi.password:
             lines.extend(

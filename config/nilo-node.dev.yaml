@@ -76,6 +76,7 @@ storage:
 
 wifi:
   enabled: false
+  hardware_ap: false               # never touch host WiFi on dev machine
   mock_when_unavailable: true
 
 cardmed:
