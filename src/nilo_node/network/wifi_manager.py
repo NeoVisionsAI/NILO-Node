@@ -14,7 +14,11 @@ from pydantic import BaseModel
 
 from nilo_node.config.models import AppConfig, WifiConfig
 from nilo_node.network.wifi_detect import detect_wifi_interface, resolve_wifi_interface
-from nilo_node.network.wifi_host import resolve_wifi_backend, run_host_wifi_script
+from nilo_node.network.wifi_host import (
+    host_ap_running,
+    resolve_wifi_backend,
+    run_host_wifi_script,
+)
 from nilo_node.network.wifi_prepare import (
     ApInterfacePlan,
     configure_ap_interface_ip,
@@ -81,11 +85,14 @@ class WifiApManager:
         return f"{self._wifi.ssid_prefix}-{short_id}"
 
     def get_status(self) -> WifiApStatus:
-        running = self._started and not self._error and (
-            self._mock
-            or self._backend == "host"
-            or self._hostapd_is_running()
-        )
+        if self._backend == "host" and self._started and not self._mock:
+            running = host_ap_running() and not self._error
+        else:
+            running = self._started and not self._error and (
+                self._mock
+                or self._backend == "host"
+                or self._hostapd_is_running()
+            )
         iface = self._active_interface or self.resolved_interface()
         return WifiApStatus(
             enabled=self._wifi.enabled,
@@ -372,9 +379,10 @@ class WifiApManager:
                 raise
 
     async def _stop_via_host_script(self) -> None:
-        script = self._wifi.host_script_path
-        if Path(script).is_file():
-            await run_host_wifi_script(script, "stop")
+        try:
+            await run_host_wifi_script(self._wifi.host_script_path, "stop")
+        except OSError as exc:
+            logger.warning("Host WiFi stop script failed: %s", exc)
 
     async def restart(self) -> WifiApStatus:
         async with self._lifecycle_lock:

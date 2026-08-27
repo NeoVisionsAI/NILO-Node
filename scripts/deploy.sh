@@ -429,8 +429,13 @@ read_env_var() {
   grep -E "^${key}=" "${env_file}" 2>/dev/null | cut -d= -f2- || true
 }
 
+ensure_install_dir_env() {
+  set_env_var "NILO_INSTALL_DIR" "${NILO_INSTALL_DIR}"
+}
+
 ensure_env_secrets() {
   ensure_env
+  ensure_install_dir_env
   local token wifi setup_pass
   token="$(read_env_var NILO_LOCAL_API_TOKEN)"
   wifi="$(read_env_var NILO_WIFI_PASSWORD)"

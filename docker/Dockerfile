@@ -54,6 +54,7 @@ RUN apt-get update \
         hostapd \
         dnsmasq \
         procps \
+        util-linux \
     && rm -rf /etc/dnsmasq.d/* \
     && printf '%s\n' '# NILO-Node manages dnsmasq via /data/wifi/dnsmasq.conf' > /etc/dnsmasq.conf \
     && rm -rf /var/lib/apt/lists/*

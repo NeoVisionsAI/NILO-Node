@@ -120,7 +120,7 @@ wifi:
   ap_interface: "auto"              # virtual AP: wlp3s0-ap (not uap0 — evita nombres bloqueados)
   concurrent_sta_ap: true             # uap0 + mismo canal que STA (#channels <= 1)
   hardware_ap: true                 # MUST stay true on mini PC; false on dev laptops
-  backend: "container"
+  backend: "host"
   host_script_path: "/host/scripts/wifi/wifi-ap-run.sh"
   channel: 6                        # fallback; concurrent mode matches STA channel (e.g. 108 on 5 GHz)
   country_code: "ES"

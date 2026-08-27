@@ -14,7 +14,8 @@ WIFI_AP = {
     "interface": "auto",
     "ap_interface": "auto",
     "concurrent_sta_ap": True,
-    "backend": "container",
+    "backend": "host",
+    "host_script_path": "/host/scripts/wifi/wifi-ap-run.sh",
     "mock_when_unavailable": True,
     "configure_interface_ip": True,
 }
