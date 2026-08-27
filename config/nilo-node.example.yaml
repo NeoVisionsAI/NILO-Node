@@ -129,7 +129,7 @@ wifi:
   dhcp_range_start: "192.168.50.10"
   dhcp_range_end: "192.168.50.100"
   configure_interface_ip: true
-
+ 
 mqtt:
   enabled: true
   broker_host: "nilomed.eu"
