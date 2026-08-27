@@ -253,6 +253,33 @@ is_dfs_channel() {
   return 1
 }
 
+print_dfs_workaround() {
+  local ch="$1"
+  is_dfs_channel "${ch}" || return 0
+  warn "Canal ${ch} = 5 GHz DFS. Muchos chipsets NO permiten AP+STA en DFS."
+  warn "Solución A (recomendada): conecta el mini PC al WiFi 2.4 GHz del router:"
+  warn "  nmcli dev wifi list | grep -i movistar"
+  warn "  nmcli dev wifi connect \"NOMBRE_2.4G\" password \"TU_CLAVE\""
+  warn "  sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
+  warn "Solución B (Ethernet): cable de red + AP dedicado 2.4 GHz:"
+  warn "  sudo WIFI_DEDICATED_AP=1 NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
+}
+
+prepare_dedicated_ap() {
+  local sta="$1"
+  AP_MODE="dedicated"
+  WIFI_AP_INTERFACE="${sta}"
+  WIFI_CHANNEL="${WIFI_CHANNEL:-6}"
+  rfkill unblock wifi 2>/dev/null || true
+  iw reg set "${WIFI_COUNTRY_CODE}" 2>/dev/null || true
+  cleanup_phy_ap_ifaces "${sta}"
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli device disconnect "${sta}" 2>/dev/null || true
+    nmcli device set "${sta}" managed no 2>/dev/null || true
+  fi
+  log "AP dedicado en ${sta} canal ${WIFI_CHANNEL} (sin WiFi cliente concurrente)"
+}
+
 write_configs() {
   local ap="$1" ssid="$2" pass="$3" hw_mode="g"
   mkdir -p "${RUNTIME_DIR}" "${PID_DIR}"
@@ -310,8 +337,16 @@ start_ap() {
   pass="${NILO_WIFI_PASSWORD:-}"
   WIFI_CHANNEL="$(detect_sta_channel "${sta}")"
 
-  ensure_ap_iface "${sta}" "${ap}"
-  ap="${WIFI_AP_INTERFACE}"
+  if [[ "${WIFI_DEDICATED_AP:-0}" == "1" ]]; then
+    prepare_dedicated_ap "${sta}"
+    ap="${WIFI_AP_INTERFACE}"
+  else
+    ensure_ap_iface "${sta}" "${ap}"
+    ap="${WIFI_AP_INTERFACE}"
+    if is_dfs_channel "${WIFI_CHANNEL}"; then
+      log "STA en canal DFS ${WIFI_CHANNEL} — si el AP no arranca, usa WiFi 2.4 GHz o WIFI_DEDICATED_AP=1"
+    fi
+  fi
   write_configs "${ap}" "${ssid}" "${pass}"
 
   pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
@@ -320,7 +355,16 @@ start_ap() {
 
   local hostapd_log="${RUNTIME_DIR}/hostapd.log"
   rm -f "${hostapd_log}"
+  set +e
   hostapd -B -P "${PID_DIR}/hostapd.pid" -f "${hostapd_log}" "${RUNTIME_DIR}/hostapd.conf"
+  local hostapd_rc=$?
+  set -e
+  if [[ "${hostapd_rc}" -ne 0 ]]; then
+    warn "hostapd falló al arrancar (rc=${hostapd_rc})"
+    print_dfs_workaround "${WIFI_CHANNEL}"
+    [[ -f "${hostapd_log}" ]] && tail -25 "${hostapd_log}" >&2 || true
+    return 1
+  fi
 
   if is_dfs_channel "${WIFI_CHANNEL}"; then
     log "Esperando CAC DFS en canal ${WIFI_CHANNEL} (hasta 90s)..."
@@ -336,13 +380,9 @@ start_ap() {
   fi
 
   if ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
-    warn "hostapd exited — check ${RUNTIME_DIR}/hostapd.conf"
-    if is_dfs_channel "${WIFI_CHANNEL}"; then
-      warn "Canal ${WIFI_CHANNEL} es DFS/RADAR (5 GHz). Si el chipset no soporta AP+STA en DFS:"
-      warn "  → Conecta el mini PC al WiFi 2.4 GHz del router (p. ej. Movistar_2.4G)"
-      warn "  → O usa Ethernet para internet y AP dedicado en canal 6"
-    fi
-    [[ -f "${hostapd_log}" ]] && tail -20 "${hostapd_log}" >&2 || true
+    warn "hostapd terminó durante el arranque"
+    print_dfs_workaround "${WIFI_CHANNEL}"
+    [[ -f "${hostapd_log}" ]] && tail -25 "${hostapd_log}" >&2 || true
     return 1
   fi
 
@@ -395,6 +435,18 @@ status_ap() {
     echo "(no hostapd.conf yet — run start)"
   fi
   pgrep -af 'hostapd|dnsmasq' 2>/dev/null | grep -E 'nilo|wifi-runtime' || echo "(no nilo hostapd/dnsmasq)"
+  if ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
+    local hlog="${RUNTIME_DIR}/hostapd.log"
+    if [[ -f "${hlog}" ]]; then
+      echo "--- hostapd.log (últimas líneas) ---"
+      tail -15 "${hlog}" 2>/dev/null || true
+    fi
+    if is_dfs_channel "${ch}"; then
+      echo ""
+      echo "⚠ STA en canal DFS ${ch}: conecta a WiFi 2.4 GHz del router y reinicia el AP,"
+      echo "  o usa Ethernet +: sudo WIFI_DEDICATED_AP=1 NILO_WIFI_ALLOW_HOST_SCRIPTS=1 $0 restart"
+    fi
+  fi
   curl -sf "http://${WIFI_AP_IP}:8080/api/v1/health" >/dev/null && echo "HTTP OK on ${WIFI_AP_IP}:8080" || echo "HTTP not reachable on ${WIFI_AP_IP}:8080"
 }
 
