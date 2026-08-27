@@ -72,6 +72,53 @@ async def test_plan_concurrent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_interface_type_parses_ap() -> None:
+    with patch(
+        "nilo_node.network.wifi_prepare._run_cmd",
+        new_callable=AsyncMock,
+        return_value=(0, "Interface wlp3s0-ap\n\tifindex 42\n\ttype AP\n"),
+    ):
+        with patch("nilo_node.network.wifi_prepare.shutil.which", return_value="/usr/sbin/iw"):
+            from nilo_node.network.wifi_prepare import _interface_type
+
+            assert await _interface_type("wlp3s0-ap") == "AP"
+
+
+@pytest.mark.asyncio
+async def test_create_virtual_ap_accepts_ap_type() -> None:
+    with patch(
+        "nilo_node.network.wifi_prepare.cleanup_phy_ap_interfaces",
+        new_callable=AsyncMock,
+    ):
+        with patch(
+            "nilo_node.network.wifi_prepare.teardown_virtual_ap",
+            new_callable=AsyncMock,
+        ):
+            with patch(
+                "nilo_node.network.wifi_prepare.force_remove_iface",
+                new_callable=AsyncMock,
+            ):
+                with patch(
+                    "nilo_node.network.wifi_prepare._create_virtual_ap_once",
+                    new_callable=AsyncMock,
+                    return_value=(True, "ok"),
+                ):
+                    with patch(
+                        "nilo_node.network.wifi_prepare._interface_exists",
+                        new_callable=AsyncMock,
+                        return_value=True,
+                    ):
+                        with patch(
+                            "nilo_node.network.wifi_prepare._interface_type",
+                            new_callable=AsyncMock,
+                            return_value="AP",
+                        ):
+                            from nilo_node.network.wifi_prepare import create_virtual_ap
+
+                            assert await create_virtual_ap("wlp3s0", "auto") == "wlp3s0-ap"
+
+
+@pytest.mark.asyncio
 async def test_verify_ap_mode_ok() -> None:
     with patch(
         "nilo_node.network.wifi_prepare._run_cmd",

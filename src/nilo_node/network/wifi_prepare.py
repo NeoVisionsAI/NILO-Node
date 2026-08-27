@@ -148,7 +148,7 @@ async def _interface_type(iface: str) -> str | None:
         return None
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[0] == "type":
+        if len(parts) >= 2 and parts[0] == "type":
             return parts[1]
     return None
 
