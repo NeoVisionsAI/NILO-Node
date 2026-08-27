@@ -18,10 +18,26 @@ if [[ "${ACTION}" != "status" && "${NILO_WIFI_ALLOW_HOST_SCRIPTS:-}" != "1" ]]; 
   echo "ERROR: Refusing to modify WiFi. Set NILO_WIFI_ALLOW_HOST_SCRIPTS=1 on the target mini PC only." >&2
   exit 1
 fi
-INSTALL_DIR="${NILO_INSTALL_DIR:-/opt/nilo-node}"
-RUNTIME_DIR="${INSTALL_DIR}/wifi-runtime"
-ENV_FILE="${INSTALL_DIR}/.env"
-PID_DIR="/run/nilo-node-wifi"
+_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+sync_paths() {
+  INSTALL_DIR="${NILO_INSTALL_DIR:-${_REPO_ROOT}}"
+  RUNTIME_DIR="${INSTALL_DIR}/wifi-runtime"
+  ENV_FILE="${INSTALL_DIR}/.env"
+  PID_DIR="/run/nilo-node-wifi"
+}
+
+sync_paths
+
+load_env() {
+  if [[ -f "${ENV_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+  fi
+  sync_paths
+}
 
 WIFI_STA_INTERFACE="${WIFI_STA_INTERFACE:-}"
 WIFI_AP_INTERFACE="${WIFI_AP_INTERFACE:-auto}"
@@ -35,15 +51,6 @@ log() { printf '[nilo-wifi-ap] %s\n' "$*"; }
 warn() { printf '[nilo-wifi-ap] WARN: %s\n' "$*" >&2; }
 
 [[ "${EUID}" -eq 0 ]] || { echo "Run as root" >&2; exit 1; }
-
-load_env() {
-  if [[ -f "${ENV_FILE}" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "${ENV_FILE}"
-    set +a
-  fi
-}
 
 detect_sta_iface() {
   if [[ -n "${WIFI_STA_INTERFACE}" ]]; then
@@ -101,7 +108,9 @@ detect_ap_iface() {
     $1=="Interface" { n=$2; t="" }
     $1=="type" {
       t=$2
-      if ((t=="AP" || t=="__ap") && n != sta && n != "") {
+      if (n == sta || n == "") next
+      if (t != "AP" && t != "__ap" && t != "managed") next
+      if (n ~ /-ap$/ || n == "uap0" || n == "niloap0" || n == "ap0") {
         print n
         exit
       }
@@ -321,6 +330,7 @@ start_ap() {
 }
 
 stop_ap() {
+  load_env
   local sta
   pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
@@ -333,15 +343,24 @@ stop_ap() {
 }
 
 status_ap() {
-  local sta ap
+  local sta ap expected ch
   sta="$(detect_sta_iface)"
+  expected="$(resolve_ap_name "${sta}" "${WIFI_AP_INTERFACE}")"
   ap="$(detect_ap_iface "${sta}")"
-  [[ -z "${ap}" ]] && ap="${WIFI_AP_INTERFACE}"
-  [[ "${ap}" == "auto" ]] && ap="$(detect_ap_iface "${sta}")"
+  [[ -z "${ap}" ]] && ap="${expected}"
+  ch="$(detect_sta_channel "${sta}")"
+  echo "Install dir:   ${INSTALL_DIR}"
+  echo "Runtime dir:   ${RUNTIME_DIR}"
   echo "STA interface: ${sta:-?}"
-  echo "AP interface:  ${ap:-?}"
+  echo "AP interface:  ${ap:-?} (expected: ${expected})"
+  echo "STA channel:   ${ch}"
   if [[ -n "${ap}" && "${ap}" != "auto" ]] && iw dev "${ap}" info 2>/dev/null; then
     echo ""
+  fi
+  if [[ -f "${RUNTIME_DIR}/hostapd.conf" ]]; then
+    grep -E '^(interface|ssid|channel|hw_mode)=' "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
+  else
+    echo "(no hostapd.conf yet — run start)"
   fi
   pgrep -af 'hostapd|dnsmasq' 2>/dev/null | grep -E 'nilo|wifi-runtime' || echo "(no nilo hostapd/dnsmasq)"
   curl -sf "http://${WIFI_AP_IP}:8080/api/v1/health" >/dev/null && echo "HTTP OK on ${WIFI_AP_IP}:8080" || echo "HTTP not reachable on ${WIFI_AP_IP}:8080"
