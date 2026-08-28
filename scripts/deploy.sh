@@ -438,6 +438,33 @@ ensure_install_dir_env() {
   set_env_var "NILO_INSTALL_DIR" "${NILO_INSTALL_DIR}"
 }
 
+read_node_id() {
+  local vol_path id
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nilo-node; then
+    id="$(docker exec nilo-node cat /data/node_id 2>/dev/null || true)"
+    [[ -n "${id}" ]] && { printf '%s' "${id}"; return; }
+  fi
+  vol_path="$(docker volume inspect nilo-node_nilo-data -f '{{.Mountpoint}}' 2>/dev/null || true)"
+  if [[ -n "${vol_path}" && -f "${vol_path}/node_id" ]]; then
+    cat "${vol_path}/node_id"
+    return
+  fi
+}
+
+sync_setup_portal_credentials() {
+  local node_id short_id wifi
+  wifi="$(read_env_var NILO_WIFI_PASSWORD)"
+  [[ -n "${wifi}" ]] || return 0
+  node_id="$(read_node_id)"
+  [[ -n "${node_id}" ]] || return 0
+  short_id="${node_id//-/}"
+  short_id="${short_id:0:8}"
+  set_env_var "NILO_SETUP_USERNAME" "${short_id}"
+  set_env_var "NILO_SETUP_PASSWORD" "${wifi}"
+  ENV_SECRETS_CHANGED=1
+  log "Portal /setup/: usuario=${short_id}, contraseña=NILO_WIFI_PASSWORD"
+}
+
 ensure_env_secrets() {
   ensure_env
   ensure_install_dir_env
@@ -458,7 +485,8 @@ ensure_env_secrets() {
     changed=1
   fi
   if [[ -z "${setup_pass}" ]]; then
-    setup_pass="$(gen_secret)"
+    setup_pass="$(read_env_var NILO_WIFI_PASSWORD)"
+    [[ -n "${setup_pass}" ]] || setup_pass="$(gen_secret)"
     set_env_var "NILO_SETUP_PASSWORD" "${setup_pass}"
     changed=1
   fi
@@ -466,6 +494,7 @@ ensure_env_secrets() {
     ENV_SECRETS_CHANGED=1
     log "Secrets generados/actualizados en ${NILO_INSTALL_DIR}/.env"
   fi
+  sync_setup_portal_credentials
 }
 
 resolve_api_token() {

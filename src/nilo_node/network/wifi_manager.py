@@ -19,6 +19,7 @@ from nilo_node.network.wifi_host import (
     resolve_wifi_backend,
     run_host_wifi_script,
 )
+from nilo_node.util.node_id import node_short_id
 from nilo_node.network.wifi_prepare import (
     ApInterfacePlan,
     channel_is_dfs,
@@ -82,8 +83,7 @@ class WifiApManager:
         return detect_wifi_interface(self._wifi.interface, exclude=exclude)
 
     def ssid_for_node(self) -> str:
-        short_id = self._node_id.replace("-", "")[:8]
-        return f"{self._wifi.ssid_prefix}-{short_id}"
+        return f"{self._wifi.ssid_prefix}-{node_short_id(self._node_id)}"
 
     def get_status(self) -> WifiApStatus:
         if self._backend == "host" and self._started and not self._mock:

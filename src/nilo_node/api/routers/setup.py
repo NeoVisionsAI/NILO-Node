@@ -16,6 +16,7 @@ from nilo_node.config.models import AppConfig
 from nilo_node.config.runtime_store import RuntimeSettings, RuntimeSettingsStore
 from nilo_node.mqtt.service import MqttService
 from nilo_node.network.wifi_manager import WifiApManager
+from nilo_node.util.node_id import node_short_id, verify_setup_login
 
 
 class LoginRequest(BaseModel):
@@ -84,20 +85,14 @@ def create_setup_router(
     auth = Depends(require_auth(config))
 
     def _check_login(username: str, password: str) -> None:
-        expected_user = config.local_api.setup_username.strip()
-        expected_pass = config.local_api.setup_password.strip()
-        if not expected_user or not expected_pass:
-            expected_pass = config.local_api.auth_token
-            if not expected_pass:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Setup credentials not configured — set NILO_SETUP_USERNAME/PASSWORD in .env",
-                )
-            if password != expected_pass:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        if verify_setup_login(
+            config=config,
+            node_id=node_id,
+            username=username,
+            password=password,
+        ):
             return
-        if username != expected_user or password != expected_pass:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     @router.post("/login")
     async def login(body: LoginRequest) -> LoginResponse:
@@ -111,7 +106,7 @@ def create_setup_router(
         mqtt_status = mqtt.get_status() if mqtt else None
         return LoginResponse(
             token=token,
-            username=body.username.strip() or config.local_api.setup_username or "admin",
+            username=body.username.strip() or node_short_id(node_id),
             mqtt_topic=mqtt_status.subscribe_topic if mqtt_status else None,
             mqtt_events_topic=mqtt_status.events_topic if mqtt_status else None,
         )

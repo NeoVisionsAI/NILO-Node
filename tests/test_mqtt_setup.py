@@ -138,6 +138,67 @@ def test_setup_login_and_dashboard(tmp_path: Path) -> None:
     assert "settings" in data
 
 
+def test_setup_login_node_short_and_wifi_password(tmp_path: Path) -> None:
+    config = _minimal_config(tmp_path)
+    config.wifi.password = "nilo2026"
+    config.local_api.setup_username = ""
+    config.local_api.setup_password = ""
+    paths = StoragePaths(tmp_path, config.storage.recordings_dir)
+    db = Database(tmp_path / "nilo-node.db")
+    db.migrate()
+    repo = StateRepository(db)
+    settings_store = RuntimeSettingsStore(db, tmp_path)
+    camera = CameraManager(config)
+    init_camera_manager(camera)
+    physiology_store = PhysiologyStore(config.cardmed, repo)
+    bluetooth = BluetoothManager(config, repo)
+    sources = build_sources(config, physiology_store=physiology_store)
+    backend = BackendClient(config, tmp_path, "1f94bda0-0000-0000-0000-000000000000")
+    upload_queue = UploadQueueService(config, repo)
+    chunk_coordinator = ChunkCoordinator(repo, paths, sources)
+    controller = CampaignController(
+        repo, chunk_coordinator, sources, paths, "1f94bda0-0000-0000-0000-000000000000"
+    )
+    storage_manager = StorageManager(
+        config, repo, paths, enabled_target_ids=enabled_replication_target_ids(config)
+    )
+    replication_manager = ReplicationManager(
+        config, repo, paths, backend, storage_manager, upload_queue
+    )
+    cardmed = CardmedService(
+        config, repo, "1f94bda0-0000-0000-0000-000000000000", physiology_store, backend
+    )
+    wifi = WifiApManager(config, tmp_path, "1f94bda0-0000-0000-0000-000000000000")
+    mqtt = MqttService(config, "1f94bda0-0000-0000-0000-000000000000")
+    cfg_path = tmp_path / "nilo-node.yaml"
+    cfg_path.write_text("camera:\n  device_ip: ''\n", encoding="utf-8")
+    applier = SettingsApplier(config, cfg_path, camera=camera, wifi=wifi, bluetooth=bluetooth)
+    app = create_app(
+        "1f94bda0-0000-0000-0000-000000000000",
+        config,
+        controller,
+        storage_manager,
+        replication_manager,
+        camera,
+        repo,
+        cardmed,
+        wifi,
+        bluetooth,
+        backend,
+        upload_queue,
+        mqtt_service=mqtt,
+        config_path=str(cfg_path),
+        settings_store=settings_store,
+        settings_applier=applier,
+    )
+    client = TestClient(app)
+    res = client.post(
+        "/api/v1/setup/login",
+        json={"username": "1f94bda0", "password": "nilo2026"},
+    )
+    assert res.status_code == 200
+
+
 def test_setup_portal_static(tmp_path: Path) -> None:
     client = _build_client(tmp_path)
     res = client.get("/setup/")
