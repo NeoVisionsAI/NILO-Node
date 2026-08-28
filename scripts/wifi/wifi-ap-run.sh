@@ -121,15 +121,7 @@ create_virtual_ap_iface() {
   local sta="$1" ap="$2" ap_mac="$3" phy
   phy="$(phy_for_sta "${sta}")"
 
-  # managed + unique MAC → hostapd promotes to AP (Arch Wiki / hostap list pattern)
-  if iw dev "${sta}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) on ${sta}"
-    return 0
-  fi
-  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) via ${phy}"
-    return 0
-  fi
+  # __ap + unique MAC first (managed → hostapd segfault on some iwlwifi builds)
   if iw dev "${sta}" interface add "${ap}" type __ap addr "${ap_mac}" 2>/dev/null; then
     log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) on ${sta}"
     return 0
@@ -138,7 +130,53 @@ create_virtual_ap_iface() {
     log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) via ${phy}"
     return 0
   fi
+  if iw dev "${sta}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) on ${sta}"
+    return 0
+  fi
+  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
+    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) via ${phy}"
+    return 0
+  fi
   return 1
+}
+
+kill_nilo_hostapd() {
+  local hostapd_log="${RUNTIME_DIR}/hostapd.log"
+  local pid_file="${PID_DIR}/hostapd.pid"
+  if [[ -f "${pid_file}" ]]; then
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [[ -n "${pid}" ]]; then
+      kill "${pid}" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${pid_file}"
+  fi
+  pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
+  sleep 0.3
+  if [[ -f "${hostapd_log}" ]]; then
+    : > "${hostapd_log}"
+  fi
+}
+
+start_hostapd_daemon() {
+  local hostapd_log="${RUNTIME_DIR}/hostapd.log"
+  local hostapd_conf="${RUNTIME_DIR}/hostapd.conf"
+  kill_nilo_hostapd
+  rm -f "${hostapd_log}"
+  if hostapd -t "${hostapd_conf}" >/dev/null 2>&1; then
+    log "hostapd config OK (-t)"
+  fi
+  set +e
+  hostapd -B -P "${PID_DIR}/hostapd.pid" "${hostapd_conf}" >>"${hostapd_log}" 2>&1
+  local rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    [[ -f "${hostapd_log}" ]] && tail -15 "${hostapd_log}" >&2 || true
+  fi
+  return "${rc}"
 }
 
 resolve_ap_name() {
@@ -370,17 +408,33 @@ start_ap() {
   fi
   write_configs "${ap}" "${ssid}" "${pass}"
 
-  pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
-  sleep 0.3
+  sleep 0.2
 
   local hostapd_log="${RUNTIME_DIR}/hostapd.log"
-  rm -f "${hostapd_log}"
-  set +e
-  hostapd -B -P "${PID_DIR}/hostapd.pid" -f "${hostapd_log}" "${RUNTIME_DIR}/hostapd.conf"
-  local hostapd_rc=$?
-  set -e
-  if [[ "${hostapd_rc}" -ne 0 ]]; then
+  local hostapd_rc=0
+  if start_hostapd_daemon; then
+    hostapd_rc=0
+  else
+    hostapd_rc=$?
+    if [[ "${hostapd_rc}" -eq 139 || "${hostapd_rc}" -gt 128 ]]; then
+      warn "hostapd crash (rc=${hostapd_rc}) — recreando interfaz __ap y reintentando"
+      if [[ "${AP_MODE}" == "concurrent" && -n "${sta}" ]]; then
+        cleanup_phy_ap_ifaces "${sta}"
+        sleep 0.5
+        ensure_ap_iface "${sta}" "${WIFI_AP_INTERFACE}"
+        ap="${WIFI_AP_INTERFACE}"
+        write_configs "${ap}" "${ssid}" "${pass}"
+      fi
+      if start_hostapd_daemon; then
+        hostapd_rc=0
+      else
+        hostapd_rc=$?
+      fi
+    fi
+  fi
+
+  if [[ "${hostapd_rc}" -ne 0 ]] && ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
     warn "hostapd falló al arrancar (rc=${hostapd_rc})"
     print_dfs_workaround "${WIFI_CHANNEL}"
     [[ -f "${hostapd_log}" ]] && tail -25 "${hostapd_log}" >&2 || true
@@ -425,9 +479,9 @@ start_ap() {
 stop_ap() {
   load_env
   local sta
-  pkill -f "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
-  rm -f "${PID_DIR}/hostapd.pid" "${PID_DIR}/dnsmasq.pid"
+  kill_nilo_hostapd
+  rm -f "${PID_DIR}/dnsmasq.pid"
   sta="$(detect_sta_iface)"
   if [[ -n "${sta}" ]]; then
     cleanup_phy_ap_ifaces "${sta}"
