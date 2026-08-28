@@ -1,28 +1,47 @@
 #!/usr/bin/env bash
-# Bootstrap completo del mini PC NILO-Node:
-#   - Dependencias de sistema (Docker, WiFi AP, Bluetooth, FFmpeg, red PoE)
-#   - Instalación del contenedor NILO-Node
-#   - Credenciales de portal web (usuario/contraseña en .env)
-#   - Red WiFi del nodo + acceso al portal /setup/
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NILO-Node — UN SOLO SCRIPT para el mini PC (instalar o actualizar todo)
 #
-# Usage (desde el repo clonado):
-#   sudo ./scripts/setup-mini-pc.sh                    # menú interactivo PoE
-#   sudo ./scripts/setup-mini-pc.sh --list-interfaces  # solo listar redes
-#   sudo POE_IFACE=enp2s0 ./scripts/setup-mini-pc.sh   # PoE sin menú
-#   sudo SKIP_POE=1 ./scripts/setup-mini-pc.sh         # sin configurar PoE
-#   sudo NONINTERACTIVE=1 ./scripts/setup-mini-pc.sh   # sin menús (auto/secrets)
+#  Usage (desde el repo clonado, p. ej. ~/dev/NILO-Node):
+#    sudo ./scripts/setup-mini-pc.sh
 #
-# Tras ejecutar: conéctate al WiFi impreso y abre http://192.168.50.1:8080/setup/
+#  Hace todo en orden:
+#    • Paquetes de sistema (Docker, hostapd, dnsmasq, Bluetooth, FFmpeg…) — solo si faltan
+#    • Credenciales .env (menú interactivo la 1ª vez; Enter/10s = mantener)
+#    • Docker + contenedor NILO-Node — install la 1ª vez, update si ya existe
+#    • WiFi AP + portal /setup/ — limpieza, 2.4 GHz, arranque
+#    • Red PoE (opcional, menú) — se omite si ya está configurada
+#
+#  Opciones:
+#    sudo ./scripts/setup-mini-pc.sh --list-interfaces
+#    sudo SKIP_POE=1 ./scripts/setup-mini-pc.sh
+#    sudo POE_IFACE=enp2s0 ./scripts/setup-mini-pc.sh
+#    sudo NONINTERACTIVE=1 ./scripts/setup-mini-pc.sh
+#    sudo FORCE_APT=1 ./scripts/setup-mini-pc.sh      # reinstalar paquetes apt
+#    sudo FORCE_POE=1 ./scripts/setup-mini-pc.sh      # reconfigurar PoE
+#
+#  Tras ejecutar: WiFi nilo-node-XXXXXXXX → http://192.168.50.1:8080/setup/
+# ═══════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NILO_INSTALL_DIR="${NILO_INSTALL_DIR:-/opt/nilo-node}"
+
+if [[ -z "${NILO_INSTALL_DIR:-}" ]]; then
+  if [[ -d "${REPO_ROOT}/.git" ]]; then
+    NILO_INSTALL_DIR="${REPO_ROOT}"
+  else
+    NILO_INSTALL_DIR="/opt/nilo-node"
+  fi
+fi
+
 POE_IFACE="${POE_IFACE:-}"
 SKIP_POE="${SKIP_POE:-0}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
+FORCE_APT="${FORCE_APT:-0}"
+FORCE_POE="${FORCE_POE:-0}"
 POE_STATE_FILE="${POE_STATE_FILE:-${NILO_INSTALL_DIR}/config/poe.env}"
 
 log() { printf '[nilo-setup] %s\n' "$*"; }
@@ -31,16 +50,27 @@ die() { printf '[nilo-setup] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ "${EUID}" -eq 0 ]] || die "Ejecuta como root: sudo $0"
 
-gen_secret() {
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 16
-  else
-    tr -dc 'a-f0-9' </dev/urandom | head -c 32
-    echo
-  fi
+system_packages_ready() {
+  command -v docker >/dev/null 2>&1 \
+    && command -v hostapd >/dev/null 2>&1 \
+    && command -v dnsmasq >/dev/null 2>&1 \
+    && command -v iw >/dev/null 2>&1 \
+    && command -v ffmpeg >/dev/null 2>&1 \
+    && command -v nmcli >/dev/null 2>&1
+}
+
+is_nilo_installed() {
+  [[ -f "${NILO_INSTALL_DIR}/.env" ]] \
+    && [[ -f "${NILO_INSTALL_DIR}/config/nilo-node.yaml" ]] \
+    && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx nilo-node
 }
 
 install_apt_packages() {
+  if [[ "${FORCE_APT}" != "1" ]] && system_packages_ready; then
+    log "Paquetes de sistema OK — omitiendo apt (FORCE_APT=1 para reinstalar)"
+    return 0
+  fi
+
   log "Instalando paquetes del sistema..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
@@ -55,8 +85,8 @@ install_apt_packages() {
     jq
   )
   local optional=(
-    wireless-tools   # obsoleto en Debian 12+ / Ubuntu 24+ — sustituido por iw
-    bluez-tools      # no existe en algunas distros; bluetoothctl viene con bluez
+    wireless-tools
+    bluez-tools
   )
 
   apt-get install -y "${required[@]}"
@@ -65,87 +95,65 @@ install_apt_packages() {
     if apt-cache show "${pkg}" >/dev/null 2>&1; then
       apt-get install -y "${pkg}" || warn "No se pudo instalar ${pkg} (opcional)"
     else
-      warn "Paquete opcional no disponible en este sistema: ${pkg} (omitido)"
+      warn "Paquete opcional no disponible: ${pkg} (omitido)"
     fi
   done
 
   log "Paquetes instalados."
 
-  # Debian/Ubuntu suelen enmascarar hostapd — lo habilitamos para AP manual
   if systemctl is-enabled hostapd >/dev/null 2>&1; then
     systemctl stop hostapd 2>/dev/null || true
     systemctl disable hostapd 2>/dev/null || true
     systemctl mask hostapd 2>/dev/null || true
-    log "hostapd systemd desactivado (NILO-Node gestiona el AP en el contenedor)."
+    log "hostapd systemd desactivado (NILO-Node gestiona el AP)."
   fi
 }
 
-prepare_env_credentials() {
+write_credentials_file() {
   local env_file="${NILO_INSTALL_DIR}/.env"
-  mkdir -p "${NILO_INSTALL_DIR}/deploy"
+  [[ -f "${env_file}" ]] || return 0
 
-  if [[ ! -f "${env_file}" ]]; then
-    if [[ -f "${REPO_ROOT}/deploy/env.example" ]]; then
-      cp "${REPO_ROOT}/deploy/env.example" "${env_file}"
-    else
-      touch "${env_file}"
-    fi
-  fi
-
-  local api_token wifi_pass setup_user setup_pass mqtt_user mqtt_pass
+  local api_token wifi_pass setup_user setup_pass
   api_token="$(grep -E '^NILO_LOCAL_API_TOKEN=' "${env_file}" | cut -d= -f2- || true)"
   wifi_pass="$(grep -E '^NILO_WIFI_PASSWORD=' "${env_file}" | cut -d= -f2- || true)"
   setup_user="$(grep -E '^NILO_SETUP_USERNAME=' "${env_file}" | cut -d= -f2- || true)"
   setup_pass="$(grep -E '^NILO_SETUP_PASSWORD=' "${env_file}" | cut -d= -f2- || true)"
 
-  [[ -n "${api_token}" ]] || api_token="$(gen_secret)"
-  [[ -n "${wifi_pass}" ]] || wifi_pass="$(gen_secret)"
-  [[ -n "${setup_user}" ]] || setup_user="admin"
-  [[ -n "${setup_pass}" ]] || setup_pass="$(gen_secret)"
-  [[ -n "${mqtt_user}" ]] || mqtt_user=""
-  [[ -n "${mqtt_pass}" ]] || mqtt_pass=""
-
-  set_env_var() {
-    local key="$1" val="$2"
-    if grep -q "^${key}=" "${env_file}" 2>/dev/null; then
-      sed -i "s|^${key}=.*|${key}=${val}|" "${env_file}"
-    else
-      echo "${key}=${val}" >> "${env_file}"
-    fi
-  }
-
-  set_env_var "NILO_LOCAL_API_TOKEN" "${api_token}"
-  set_env_var "NILO_WIFI_PASSWORD" "${wifi_pass}"
-  set_env_var "NILO_SETUP_USERNAME" "${setup_user}"
-  set_env_var "NILO_SETUP_PASSWORD" "${setup_pass}"
-
   CREDENTIALS_FILE="${NILO_INSTALL_DIR}/setup-credentials.txt"
   cat > "${CREDENTIALS_FILE}" <<EOF
-# NILO-Node — credenciales generadas $(date -Iseconds)
-# Portal web: http://192.168.50.1:8080/setup/
+# NILO-Node — credenciales $(date -Iseconds)
+# Portal: http://192.168.50.1:8080/setup/
 
-WiFi SSID:     (ver abajo tras arrancar — nilo-node-XXXXXXXX)
+WiFi SSID:     nilo-node-XXXXXXXX (ver API tras arrancar)
 WiFi password: ${wifi_pass}
 
-Portal usuario: ${setup_user}
+Portal usuario: ${setup_user:-(uuid8 del nodo)}
 Portal password: ${setup_pass}
 
-API Bearer token (MQTT token field): ${api_token}
-
-MQTT (configurar en portal o .env):
-  NILO_MQTT_USERNAME=
-  NILO_MQTT_PASSWORD=
+API Bearer token: ${api_token}
 EOF
   chmod 600 "${CREDENTIALS_FILE}"
-  log "Credenciales guardadas en ${CREDENTIALS_FILE}"
+  log "Credenciales en ${CREDENTIALS_FILE}"
 }
 
-install_nilo_node() {
-  log "Instalando NILO-Node (Docker + contenedor)..."
-  export NONINTERACTIVE="${NONINTERACTIVE}"
-  export INSTALL_SYSTEMD="${INSTALL_SYSTEMD}"
-  export NILO_INSTALL_DIR
-  "${REPO_ROOT}/scripts/deploy.sh" install
+deploy_nilo_node() {
+  export NONINTERACTIVE INSTALL_SYSTEMD NILO_INSTALL_DIR REPO_ROOT
+  if is_nilo_installed; then
+    log "NILO-Node ya instalado en ${NILO_INSTALL_DIR} — actualizando..."
+    "${REPO_ROOT}/scripts/deploy.sh" update
+  else
+    log "Primera instalación en ${NILO_INSTALL_DIR}..."
+    "${REPO_ROOT}/scripts/deploy.sh" install
+  fi
+}
+
+ensure_wifi_ap() {
+  local run="${NILO_INSTALL_DIR}/scripts/wifi/wifi-ap-run.sh"
+  [[ -f "${run}" ]] || run="${REPO_ROOT}/scripts/wifi/wifi-ap-run.sh"
+  [[ -f "${run}" ]] || { warn "wifi-ap-run.sh no encontrado — omitiendo AP"; return 0; }
+  log "WiFi AP (limpieza + 2.4 GHz + arranque)..."
+  NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${run}" up \
+    || warn "wifi-ap-run.sh up falló — revisa: sudo ${run} status"
 }
 
 optional_poe_network() {
@@ -154,20 +162,26 @@ optional_poe_network() {
     return 0
   fi
 
+  if [[ "${FORCE_POE}" != "1" && -f "${POE_STATE_FILE}" ]]; then
+    log "PoE ya configurado (${POE_STATE_FILE}) — omitiendo (FORCE_POE=1 para reconfigurar)"
+    return 0
+  fi
+
   local picker="${REPO_ROOT}/scripts/oak/network-interfaces.sh"
-  [[ -x "${picker}" ]] || chmod +x "${picker}"
+  [[ -x "${picker}" ]] || chmod +x "${picker}" 2>/dev/null || true
+  [[ -x "${picker}" ]] || { warn "network-interfaces.sh no encontrado — omitiendo PoE"; return 0; }
 
   if [[ -z "${POE_IFACE}" ]]; then
-    log "Detectando interfaces de red (menú PoE)..."
+    log "Red PoE (opcional)..."
     if POE_IFACE="$(POE_STATE_FILE="${POE_STATE_FILE}" "${picker}" pick)"; then
-      log "Interfaz PoE seleccionada: ${POE_IFACE}"
+      log "Interfaz PoE: ${POE_IFACE}"
     else
-      warn "PoE no configurado (omitido en el menú o sin interfaces)."
+      warn "PoE omitido (sin selección en menú)."
       return 0
     fi
   fi
 
-  log "Configurando red PoE en ${POE_IFACE}..."
+  log "Configurando PoE en ${POE_IFACE}..."
   POE_IFACE="${POE_IFACE}" POE_STATE_FILE="${POE_STATE_FILE}" \
     "${REPO_ROOT}/scripts/oak/setup-poe-network.sh"
 }
@@ -176,57 +190,52 @@ cmd_list_interfaces() {
   local picker="${REPO_ROOT}/scripts/oak/network-interfaces.sh"
   chmod +x "${picker}" 2>/dev/null || true
   POE_STATE_FILE="${POE_STATE_FILE}" "${picker}" list
-  if [[ -f "${POE_STATE_FILE}" ]]; then
-    log "Guardado: ${POE_STATE_FILE}"
-    cat "${POE_STATE_FILE}" >&2
-  fi
 }
 
 print_summary() {
-  local cred="${NILO_INSTALL_DIR}/setup-credentials.txt"
-  log "============================================"
-  log "NILO-Node listo."
-  log ""
+  log "════════════════════════════════════════════"
+  log "NILO-Node listo — install dir: ${NILO_INSTALL_DIR}"
+  if is_nilo_installed; then
+    log "Estado:     instalado y actualizado"
+  fi
   if curl -sf "http://127.0.0.1:8080/api/v1/health" >/dev/null 2>&1; then
-    local info ssid
+    local info ssid node_short
     info="$(curl -sf "http://127.0.0.1:8080/api/v1/node/info" 2>/dev/null || echo '{}')"
     ssid="$(echo "${info}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('wifi',{}).get('ssid','?'))" 2>/dev/null || echo "?")"
-    log "WiFi SSID: ${ssid}"
+    node_short="$(echo "${info}" | python3 -c "import sys,json; d=json.load(sys.stdin); n=d.get('node_id',''); print(n.replace('-','')[:8])" 2>/dev/null || echo "?")"
+    log "WiFi SSID:  ${ssid}"
+    log "Portal:     http://192.168.50.1:8080/setup/"
+    log "Usuario:    ${node_short} (uuid8 del nodo)"
   fi
-  log "Portal:    http://192.168.50.1:8080/setup/"
-  log "Credenciales: ${cred}"
-  log ""
-  log "1) Conéctate al WiFi del nodo"
-  log "2) Abre el portal e inicia sesión"
-  log "3) Configura cámara / Bluetooth y pulsa Guardar"
-  log "============================================"
+  local cred="${NILO_INSTALL_DIR}/setup-credentials.txt"
+  [[ -f "${cred}" ]] && grep -E '^(WiFi|Portal)' "${cred}" 2>/dev/null || true
+  log "════════════════════════════════════════════"
+  log "Comando único para repetir todo: sudo $0"
 }
 
 main() {
   case "${1:-}" in
-    --list-interfaces|-l)
-      cmd_list_interfaces
-      exit 0
-      ;;
-    --help|-h)
-      sed -n '1,20p' "$0" >&2
+    --list-interfaces) cmd_list_interfaces; exit 0 ;;
+    -h|--help)
+      sed -n '3,24p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
   esac
 
-  log "Repo: ${REPO_ROOT}"
-  install_apt_packages
-  install_nilo_node
-  prepare_env_credentials
-  optional_poe_network
-
-  log "Recargando servicio (WiFi AP incluido en deploy)..."
-  NONINTERACTIVE=1 "${REPO_ROOT}/scripts/deploy.sh" reload || warn "Reload falló — revisa logs"
-
-  print_summary
-  if [[ -n "${POE_IFACE:-}" ]]; then
-    log "PoE: ping -c 2 169.254.1.222"
+  log "NILO-Node setup — ${NILO_INSTALL_DIR}"
+  if is_nilo_installed; then
+    log "Detectado: ya instalado → se omiten pasos completados"
+  else
+    log "Detectado: primera instalación"
   fi
+  echo ""
+
+  install_apt_packages
+  optional_poe_network
+  deploy_nilo_node
+  ensure_wifi_ap
+  write_credentials_file
+  print_summary
 }
 
 main "$@"

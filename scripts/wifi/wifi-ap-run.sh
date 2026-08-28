@@ -5,6 +5,7 @@
 #
 # Usage (un solo comando recomendado):
 #   sudo ./scripts/wifi/wifi-ap-run.sh up
+#   (pide contraseñas solo la 1ª vez; uuid del nodo → usuario portal)
 #
 # También: start | stop | restart (=up) | status | check
 #
@@ -212,8 +213,23 @@ full_cleanup() {
   log "Limpieza completada"
 }
 
+configure_node_credentials() {
+  local deploy="${INSTALL_DIR}/scripts/deploy.sh"
+  [[ -f "${deploy}" ]] || return 0
+  NILO_INSTALL_DIR="${INSTALL_DIR}" bash "${deploy}" configure-credentials
+}
+
+apply_node_credentials() {
+  local deploy="${INSTALL_DIR}/scripts/deploy.sh"
+  [[ -f "${deploy}" ]] || return 0
+  NILO_INSTALL_DIR="${INSTALL_DIR}" bash "${deploy}" apply-credentials 2>/dev/null || true
+}
+
 up_ap() {
   load_env
+  configure_node_credentials
+  load_env
+
   local sta
   sta="$(detect_sta_iface)"
   [[ -n "${sta}" ]] || die "No hay interfaz WiFi STA"
@@ -230,6 +246,7 @@ up_ap() {
   fi
 
   start_ap_core
+  apply_node_credentials
   log "✓ Listo — portal http://${WIFI_AP_IP}:8080/setup/  |  comprobar: $0 status"
 }
 

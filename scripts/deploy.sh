@@ -5,6 +5,7 @@
 #   sudo ./scripts/deploy.sh install              # first-time setup
 #   sudo ./scripts/deploy.sh update               # pull + rebuild + WiFi AP restart
 #   sudo ./scripts/deploy.sh reload               # restart container + WiFi AP
+#   sudo ./scripts/deploy.sh configure-credentials  # menú contraseñas (también vía wifi-ap-run.sh up)
 #   sudo SKIP_WIFI_AP=1 ./scripts/deploy.sh update   # skip WiFi host/API steps
 #   sudo NILO_DOCKER_PULL=1 ./scripts/deploy.sh update   # also refresh base images
 #   ./scripts/deploy.sh status                    # health + container state
@@ -46,6 +47,7 @@ INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 API_PORT="${API_PORT:-8080}"
 ENV_SECRETS_CHANGED=0
+CREDENTIAL_PROMPT_TIMEOUT="${CREDENTIAL_PROMPT_TIMEOUT:-10}"
 
 COMPOSE_FILE=""
 COMPOSE_PROJECT="nilo-node"
@@ -360,6 +362,13 @@ print_wifi_summary() {
     log "SSID:     ${ssid}"
     log "Modo:     ${ap_mode} (backend=${backend})"
     log "Portal:   http://192.168.50.1:${API_PORT}/setup/"
+    local setup_user wifi_pass portal_pass
+    setup_user="$(read_env_var NILO_SETUP_USERNAME)"
+    wifi_pass="$(read_env_var NILO_WIFI_PASSWORD)"
+    portal_pass="$(read_env_var NILO_SETUP_PASSWORD)"
+    if [[ -n "${setup_user}" ]]; then
+      log "Login:    usuario=${setup_user}, contraseña portal=${portal_pass:-${wifi_pass}}"
+    fi
     if [[ -n "${error}" ]]; then
       warn "WiFi error: ${error}"
     fi
@@ -383,33 +392,16 @@ ensure_env() {
     touch "${env_file}"
   fi
 
-  local token wifi setup_user setup_pass
+  local token
   token="$(gen_secret)"
-  wifi="$(gen_secret)"
-  setup_user="${NILO_SETUP_USERNAME:-admin}"
-  setup_pass="$(gen_secret)"
 
   if [[ "${NONINTERACTIVE}" == "1" ]]; then
     sed -i "s/^NILO_LOCAL_API_TOKEN=.*/NILO_LOCAL_API_TOKEN=${token}/" "${env_file}"
-    sed -i "s/^NILO_WIFI_PASSWORD=.*/NILO_WIFI_PASSWORD=${wifi}/" "${env_file}"
-    if grep -q '^NILO_SETUP_USERNAME=' "${env_file}"; then
-      sed -i "s/^NILO_SETUP_USERNAME=.*/NILO_SETUP_USERNAME=${setup_user}/" "${env_file}"
-    else
-      echo "NILO_SETUP_USERNAME=${setup_user}" >> "${env_file}"
-    fi
-    if grep -q '^NILO_SETUP_PASSWORD=' "${env_file}"; then
-      sed -i "s/^NILO_SETUP_PASSWORD=.*/NILO_SETUP_PASSWORD=${setup_pass}/" "${env_file}"
-    else
-      echo "NILO_SETUP_PASSWORD=${setup_pass}" >> "${env_file}"
-    fi
-    log "Generated API token, WiFi password, setup user/password in ${env_file}"
+    log "Created ${env_file} — secrets se generan en configure-credentials"
   else
-    warn "Edit ${env_file} and set at least:"
-    warn "  NILO_LOCAL_API_TOKEN (e.g. ${token})"
-    warn "  NILO_WIFI_PASSWORD   (e.g. ${wifi})"
-    warn "  NILO_SETUP_USERNAME  (e.g. ${setup_user})"
-    warn "  NILO_SETUP_PASSWORD  (e.g. ${setup_pass})"
-    warn "  NILO_BACKEND_*       (when backend is configured)"
+    sed -i "s/^NILO_LOCAL_API_TOKEN=.*/NILO_LOCAL_API_TOKEN=${token}/" "${env_file}" 2>/dev/null \
+      || echo "NILO_LOCAL_API_TOKEN=${token}" >> "${env_file}"
+    log "Creado ${env_file} — se pedirán contraseñas en el menú interactivo"
   fi
 }
 
@@ -440,12 +432,121 @@ read_env_var() {
   grep -E "^${key}=" "${env_file}" 2>/dev/null | cut -d= -f2- || true
 }
 
+mask_secret_hint() {
+  local s="$1" n="${#s}"
+  [[ "${n}" -eq 0 ]] && { echo "sin configurar"; return; }
+  [[ "${n}" -le 2 ]] && { echo "**"; return; }
+  printf '%s*** (%d chars)' "${s:0:2}" "${n}"
+}
+
+prompt_env_secret() {
+  local key="$1" label="$2" fallback="${3:-}"
+  local current input new_val
+
+  current="$(read_env_var "${key}")"
+
+  if [[ "${NONINTERACTIVE}" == "1" || ! -t 0 ]]; then
+    if [[ -z "${current}" ]]; then
+      if [[ -n "${fallback}" ]]; then
+        new_val="${fallback}"
+      else
+        new_val="$(gen_secret)"
+      fi
+      set_env_var "${key}" "${new_val}"
+      ENV_SECRETS_CHANGED=1
+      log "${label}: generada automáticamente"
+    fi
+    return 0
+  fi
+
+  echo ""
+  printf '%s [%s]\n' "${label}" "$(mask_secret_hint "${current}")" >&2
+  printf '  Enter=mantener, %ds sin escribir=mantener (primera vez: aleatoria): ' "${CREDENTIAL_PROMPT_TIMEOUT}" >&2
+  input=""
+  if ! read -r -s -t "${CREDENTIAL_PROMPT_TIMEOUT}" input; then
+    echo "" >&2
+    input=""
+  else
+    echo "" >&2
+  fi
+
+  if [[ -z "${input}" ]]; then
+    if [[ -n "${current}" ]]; then
+      log "${label}: se mantiene la anterior"
+      return 0
+    fi
+    if [[ -n "${fallback}" ]]; then
+      new_val="${fallback}"
+    else
+      new_val="$(gen_secret)"
+    fi
+    set_env_var "${key}" "${new_val}"
+    ENV_SECRETS_CHANGED=1
+    log "${label}: generada automáticamente (primera vez)"
+    return 0
+  fi
+
+  if [[ "${input}" != "${current}" ]]; then
+    set_env_var "${key}" "${input}"
+    ENV_SECRETS_CHANGED=1
+    log "${label}: actualizada"
+  else
+    log "${label}: sin cambios"
+  fi
+}
+
+configure_credentials_interactive() {
+  ensure_env
+  ensure_install_dir_env
+
+  local token wifi setup_pass need_prompt=0
+  token="$(read_env_var NILO_LOCAL_API_TOKEN)"
+  if [[ -z "${token}" ]]; then
+    token="$(gen_secret)"
+    set_env_var "NILO_LOCAL_API_TOKEN" "${token}"
+    ENV_SECRETS_CHANGED=1
+    log "Token API local generado"
+  fi
+
+  wifi="$(read_env_var NILO_WIFI_PASSWORD)"
+  setup_pass="$(read_env_var NILO_SETUP_PASSWORD)"
+  [[ -z "${wifi}" || -z "${setup_pass}" ]] && need_prompt=1
+
+  if [[ "${NONINTERACTIVE}" == "1" || ! -t 0 ]]; then
+    if [[ -z "${wifi}" ]]; then
+      wifi="$(gen_secret)"
+      set_env_var "NILO_WIFI_PASSWORD" "${wifi}"
+      ENV_SECRETS_CHANGED=1
+    fi
+    if [[ -z "${setup_pass}" ]]; then
+      setup_pass="${wifi}"
+      set_env_var "NILO_SETUP_PASSWORD" "${setup_pass}"
+      ENV_SECRETS_CHANGED=1
+    fi
+    sync_setup_portal_credentials || true
+    return 0
+  fi
+
+  if [[ "${need_prompt}" == "1" || "${CREDENTIALS_PROMPT:-}" == "always" ]]; then
+    log "── Credenciales NILO-Node (.env) ──"
+    prompt_env_secret "NILO_WIFI_PASSWORD" "Contraseña WiFi del AP (SSID nilo-node-…)"
+    wifi="$(read_env_var NILO_WIFI_PASSWORD)"
+    prompt_env_secret "NILO_SETUP_PASSWORD" "Contraseña portal web /setup/" "${wifi}"
+  fi
+  sync_setup_portal_credentials || true
+}
+
 ensure_install_dir_env() {
   set_env_var "NILO_INSTALL_DIR" "${NILO_INSTALL_DIR}"
 }
 
 read_node_id() {
   local vol_path id
+  if curl -sf "http://127.0.0.1:${API_PORT}/api/v1/node/info" >/dev/null 2>&1; then
+    id="$(curl -sf "http://127.0.0.1:${API_PORT}/api/v1/node/info" \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('node_id',''))" 2>/dev/null || true)"
+    [[ -n "${id}" ]] && { printf '%s' "${id}"; return; }
+  fi
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nilo-node; then
     id="$(docker exec nilo-node cat /data/node_id 2>/dev/null || true)"
     [[ -n "${id}" ]] && { printf '%s' "${id}"; return; }
@@ -458,49 +559,41 @@ read_node_id() {
 }
 
 sync_setup_portal_credentials() {
-  local node_id short_id wifi
-  wifi="$(read_env_var NILO_WIFI_PASSWORD)"
-  [[ -n "${wifi}" ]] || return 0
+  local node_id short_id
   node_id="$(read_node_id)"
-  [[ -n "${node_id}" ]] || return 0
+  [[ -n "${node_id}" ]] || return 1
   short_id="${node_id//-/}"
   short_id="${short_id:0:8}"
-  set_env_var "NILO_SETUP_USERNAME" "${short_id}"
-  set_env_var "NILO_SETUP_PASSWORD" "${wifi}"
-  ENV_SECRETS_CHANGED=1
-  log "Portal /setup/: usuario=${short_id}, contraseña=NILO_WIFI_PASSWORD"
+  if [[ "$(read_env_var NILO_SETUP_USERNAME)" != "${short_id}" ]]; then
+    set_env_var "NILO_SETUP_USERNAME" "${short_id}"
+    ENV_SECRETS_CHANGED=1
+  fi
+  log "Portal /setup/: usuario=${short_id} (uuid del nodo)"
+  return 0
+}
+
+apply_portal_credentials_to_container() {
+  [[ "${ENV_SECRETS_CHANGED:-0}" == "1" ]] || return 0
+  local mode
+  mode="$(detect_deploy_mode)"
+  setup_compose_file "${mode}"
+  cd "${NILO_INSTALL_DIR}"
+  log "Aplicando credenciales actualizadas al contenedor..."
+  ${DC[@]} -f "${COMPOSE_FILE}" up -d --force-recreate
+  ENV_SECRETS_CHANGED=0
+  wait_healthy || true
+}
+
+finalize_portal_credentials() {
+  sync_setup_portal_credentials || return 0
+  apply_portal_credentials_to_container
 }
 
 ensure_env_secrets() {
-  ensure_env
-  ensure_install_dir_env
-  local token wifi setup_pass
-  token="$(read_env_var NILO_LOCAL_API_TOKEN)"
-  wifi="$(read_env_var NILO_WIFI_PASSWORD)"
-  setup_pass="$(read_env_var NILO_SETUP_PASSWORD)"
-  local changed=0
-
-  if [[ -z "${token}" ]]; then
-    token="$(gen_secret)"
-    set_env_var "NILO_LOCAL_API_TOKEN" "${token}"
-    changed=1
+  configure_credentials_interactive
+  if [[ "${ENV_SECRETS_CHANGED:-0}" == "1" ]]; then
+    log "Secrets actualizados en ${NILO_INSTALL_DIR}/.env"
   fi
-  if [[ -z "${wifi}" ]]; then
-    wifi="$(gen_secret)"
-    set_env_var "NILO_WIFI_PASSWORD" "${wifi}"
-    changed=1
-  fi
-  if [[ -z "${setup_pass}" ]]; then
-    setup_pass="$(read_env_var NILO_WIFI_PASSWORD)"
-    [[ -n "${setup_pass}" ]] || setup_pass="$(gen_secret)"
-    set_env_var "NILO_SETUP_PASSWORD" "${setup_pass}"
-    changed=1
-  fi
-  if [[ "${changed}" == "1" ]]; then
-    ENV_SECRETS_CHANGED=1
-    log "Secrets generados/actualizados en ${NILO_INSTALL_DIR}/.env"
-  fi
-  sync_setup_portal_credentials
 }
 
 resolve_api_token() {
@@ -648,6 +741,7 @@ cmd_install() {
   fi
 
   wait_healthy || health_ok=0
+  finalize_portal_credentials || true
   if [[ "${health_ok:-1}" == "1" ]]; then
     restart_wifi_ap || true
   else
@@ -673,6 +767,7 @@ cmd_reload() {
   load_env
   compose_reload
   wait_healthy || health_ok=0
+  finalize_portal_credentials || true
   if [[ "${health_ok:-1}" == "1" ]]; then
     restart_wifi_ap || true
   else
@@ -706,6 +801,7 @@ cmd_update() {
   fi
   compose_update "${mode}"
   wait_healthy || health_ok=0
+  finalize_portal_credentials || true
   if [[ "${health_ok:-1}" == "1" ]]; then
     restart_wifi_ap || true
   else
@@ -790,6 +886,34 @@ cmd_uninstall() {
   log "Uninstall complete."
 }
 
+cmd_configure_credentials() {
+  need_root configure-credentials
+  [[ -d "${NILO_INSTALL_DIR}" ]] || mkdir -p "${NILO_INSTALL_DIR}"
+  local mode
+  mode="$(detect_deploy_mode)"
+  setup_compose_file "${mode}" 2>/dev/null || true
+  CREDENTIALS_PROMPT="${CREDENTIALS_PROMPT:-always}" configure_credentials_interactive
+  load_env
+  apply_portal_credentials_to_container
+}
+
+cmd_apply_credentials() {
+  need_root apply-credentials
+  [[ -d "${NILO_INSTALL_DIR}" ]] || return 0
+  local mode
+  mode="$(detect_deploy_mode)"
+  setup_compose_file "${mode}" 2>/dev/null || true
+  sync_setup_portal_credentials || true
+  apply_portal_credentials_to_container
+}
+
+cmd_sync_credentials() {
+  cmd_configure_credentials
+  restart_wifi_ap || true
+  print_wifi_summary || true
+  log "Credenciales sincronizadas en ${NILO_INSTALL_DIR}/.env"
+}
+
 usage() {
   sed -n '2,24p' "$0" | sed 's/^# \?//'
   exit "${1:-0}"
@@ -807,9 +931,12 @@ main() {
     logs) cmd_logs "${1:-}" ;;
     stop) cmd_stop ;;
     uninstall) cmd_uninstall ;;
+    configure-credentials) cmd_configure_credentials ;;
+    apply-credentials) cmd_apply_credentials ;;
+    sync-credentials) cmd_sync_credentials ;;
     -h|--help|help) usage 0 ;;
     *)
-      die "Unknown command: ${cmd}. Use: install | update | reload | status | logs | stop | uninstall"
+      die "Unknown command: ${cmd}. Use: install | update | reload | configure-credentials | status | logs | stop | uninstall"
       ;;
   esac
 }
