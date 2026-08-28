@@ -1,4 +1,5 @@
 const TOKEN_KEY = "nilo_setup_token";
+const THEME_KEY = "nilo_theme";
 const TITLES = {
   dashboard: "Panel",
   wifi: "WiFi",
@@ -35,17 +36,46 @@ function stopLoading() {
 
 function showToast(msg, type = "ok") {
   if (!msg) return;
-  const host = $("toast-host");
+  let host = $("toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toast-host";
+    host.className = "toast-host";
+    host.setAttribute("aria-live", "polite");
+    document.body.appendChild(host);
+  }
   const el = document.createElement("div");
   el.className = `toast ${type === "error" ? "error" : "ok"}`;
+  el.setAttribute("role", type === "error" ? "alert" : "status");
   el.textContent = msg;
   host.appendChild(el);
   setTimeout(() => {
     el.style.opacity = "0";
-    el.style.transform = "translateY(8px)";
+    el.style.transform = "translateX(12px)";
     el.style.transition = "opacity 0.25s ease, transform 0.25s ease";
     setTimeout(() => el.remove(), 280);
-  }, 4000);
+  }, 4500);
+}
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem(THEME_KEY, next);
+  const btn = $("theme-toggle");
+  if (btn) {
+    btn.textContent = next === "dark" ? "☾" : "☀";
+    btn.title = next === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro";
+  }
+}
+
+function initTheme() {
+  applyTheme(localStorage.getItem(THEME_KEY) || "light");
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") || "light";
+  applyTheme(current === "dark" ? "light" : "dark");
+  showToast(current === "dark" ? "Tema claro activado" : "Tema oscuro activado", "ok");
 }
 
 async function apiRequest(path, options = {}) {
@@ -93,6 +123,11 @@ async function apiRequest(path, options = {}) {
 
     if (successMessage && !silent) showToast(successMessage, "ok");
     return res;
+  } catch (err) {
+    if (!silent && err instanceof TypeError) {
+      showToast("Error de red — comprueba la conexión", "error");
+    }
+    throw err;
   } finally {
     stopLoading();
   }
@@ -334,6 +369,7 @@ $("login-form").addEventListener("submit", async (e) => {
   } catch (err) {
     $("login-error").textContent = err.message;
     $("login-error").classList.remove("hidden");
+    showToast(err.message || "Error de inicio de sesión", "error");
   }
 });
 
@@ -345,7 +381,15 @@ document.querySelectorAll("[data-goto]").forEach((btn) => {
   btn.addEventListener("click", () => showTab(btn.dataset.goto));
 });
 
-$("logout-btn").addEventListener("click", logout);
+$("logout-btn").addEventListener("click", () => {
+  showToast("Sesión cerrada", "ok");
+  logout();
+});
+$("logout-btn-top").addEventListener("click", () => {
+  showToast("Sesión cerrada", "ok");
+  logout();
+});
+$("theme-toggle").addEventListener("click", toggleTheme);
 
 $("dash-refresh").addEventListener("click", () => {
   loadDashboard().catch(() => logout());
@@ -486,3 +530,5 @@ setInterval(() => {
     refreshCameraPreview({ silent: true });
   }
 }, 2500);
+
+initTheme();

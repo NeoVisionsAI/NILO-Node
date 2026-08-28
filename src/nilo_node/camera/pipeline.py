@@ -132,8 +132,13 @@ class DepthAiCapturePipeline(CapturePipeline):
         self._cfg = camera_cfg
         self._device_id: str | None = None
         self._session: Any = None
-        self._pose_engine = build_pose_engine(camera_cfg)
+        self._pose_engine: Any = None
         self._use_synthetic = False
+
+    def _get_pose_engine(self):
+        if self._pose_engine is None:
+            self._pose_engine = build_pose_engine(self._cfg)
+        return self._pose_engine
 
     async def start(self, device_id: str | None) -> None:
         from nilo_node.camera.discovery import discover_devices
@@ -198,8 +203,9 @@ class DepthAiCapturePipeline(CapturePipeline):
         if self._session is not None:
             await asyncio.to_thread(self._session.close)
             self._session = None
-        if hasattr(self._pose_engine, "close"):
+        if self._pose_engine is not None and hasattr(self._pose_engine, "close"):
             self._pose_engine.close()  # type: ignore[union-attr]
+        self._pose_engine = None
         self._device_id = None
 
     def is_alive(self) -> bool:
@@ -226,10 +232,11 @@ class DepthAiCapturePipeline(CapturePipeline):
         if flags.tof:
             session.writers["tof"] = create_writer("depthai", "tof", base / "tof", camera_cfg=self._cfg)
         if flags.pose:
+            pose_engine = self._get_pose_engine()
             session.writers["pose"] = PoseLandmarkWriter(
                 base / "pose",
-                engine_id=self._pose_engine.engine_id,
-                landmark_count=self._pose_engine.landmark_count,
+                engine_id=pose_engine.engine_id,
+                landmark_count=pose_engine.landmark_count,
                 fps=self._cfg.pose_fps,
             )
         session.running = True
@@ -267,7 +274,7 @@ class DepthAiCapturePipeline(CapturePipeline):
                 next_tof += tof_interval
 
             if session.flags.pose and now >= next_pose and "pose" in session.writers and rgb_frame is not None:
-                landmarks = self._pose_engine.process(rgb_frame, ts)
+                landmarks = self._get_pose_engine().process(rgb_frame, ts)
                 session.writers["pose"].write_frame(ts, landmarks)
                 next_pose += pose_interval
 

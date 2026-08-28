@@ -20,6 +20,11 @@ class MediapipePoseEngine:
         try:
             import mediapipe as mp
 
+            if not hasattr(mp, "solutions"):
+                raise AttributeError(
+                    "mediapipe instalado pero sin API 'solutions' "
+                    "(versión nueva — usa pose_backend=yolo o actualiza el engine)"
+                )
             self._mp_pose = mp.solutions.pose
             self._pose = self._mp_pose.Pose(
                 static_image_mode=False,
@@ -31,6 +36,8 @@ class MediapipePoseEngine:
             self._available = True
         except ImportError:
             logger.warning("mediapipe not installed — pose engine falls back to stub output")
+        except (AttributeError, RuntimeError, OSError) as exc:
+            logger.warning("mediapipe pose unavailable (%s) — stub output", exc)
 
     def process(self, frame_bgr: np.ndarray, timestamp: float) -> np.ndarray:
         if not self._available or self._pose is None:
