@@ -95,13 +95,15 @@
         <div class="grid two">
           <div class="card">
             <h3>Vista en vivo</h3>
+            <div id="cam-banner" class="status-banner hidden"></div>
             <div class="preview-wrap">
-              <img id="cam-preview" alt="Vista previa" />
-              <div id="cam-preview-placeholder" class="preview-ph">Sin señal — conecta la cámara</div>
+              <img id="cam-preview" alt="Vista previa" class="hidden" />
+              <div id="cam-preview-placeholder" class="preview-ph">Sin señal — pulsa Detectar y Conectar</div>
             </div>
             <div class="row">
               <button id="cam-discover" class="btn secondary">Detectar</button>
               <button id="cam-connect" class="btn primary">Conectar</button>
+              <button id="cam-snapshot" class="btn secondary">Capturar frame</button>
               <button id="cam-disconnect" class="btn ghost">Desconectar</button>
             </div>
           </div>
@@ -131,7 +133,11 @@
         </div>
         <div class="card">
           <h3>Estado</h3>
-          <pre id="cam-status" class="code"></pre>
+          <div id="cam-status-summary" class="kv"></div>
+          <details class="code-details">
+            <summary>Detalle técnico (JSON)</summary>
+            <pre id="cam-status" class="code"></pre>
+          </details>
         </div>
       </section>
 

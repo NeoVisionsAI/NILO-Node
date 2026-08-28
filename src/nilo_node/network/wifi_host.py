@@ -30,15 +30,36 @@ def resolve_host_script_on_host(configured: str) -> str:
     return str(Path(install) / "scripts/wifi/wifi-ap-run.sh")
 
 
+def _host_pgrep_hostapd() -> bool:
+    """Run pgrep on the host (needed inside Docker — /proc only lists container PIDs)."""
+    import subprocess
+
+    pattern = "wifi-runtime/hostapd.conf"
+    if Path("/.dockerenv").exists() and shutil.which("nsenter"):
+        try:
+            result = subprocess.run(
+                ["nsenter", "-t", "1", "-m", "-n", "-p", "--", "pgrep", "-f", pattern],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return _pgrep_hostapd()
+
+
 def host_ap_running() -> bool:
     """True if hostapd from wifi-ap-run.sh (wifi-runtime) is running on the host."""
+    if _host_pgrep_hostapd():
+        return True
     for pid in _find_pids_by_cmdline("wifi-runtime"):
         try:
             os.kill(pid, 0)
             return True
         except ProcessLookupError:
             continue
-    return bool(shutil.which("pgrep") and _pgrep_hostapd())
+    return False
 
 
 def _pgrep_hostapd() -> bool:

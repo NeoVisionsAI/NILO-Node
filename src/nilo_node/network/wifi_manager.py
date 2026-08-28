@@ -44,8 +44,10 @@ class WifiApStatus(BaseModel):
     interface: str = "wlan0"
     sta_interface: str | None = None
     ap_interface: str | None = None
-    ap_mode: str | None = None  # concurrent | dedicated | mock
+    ap_mode: str | None = None  # concurrent | dedicated | mock | host
     ap_ip: str = "192.168.50.1"
+    backend: str | None = None
+    host_ap_detected: bool = False
     error: str | None = None
 
 
@@ -85,15 +87,28 @@ class WifiApManager:
     def ssid_for_node(self) -> str:
         return f"{self._wifi.ssid_prefix}-{node_short_id(self._node_id)}"
 
+    def _effective_backend(self) -> str:
+        if self._started and self._backend:
+            return self._backend
+        return resolve_wifi_backend(self._wifi.backend, self._wifi.host_script_path)
+
     def get_status(self) -> WifiApStatus:
-        if self._backend == "host" and self._started and not self._mock:
-            running = host_ap_running() and not self._error
+        backend = self._effective_backend()
+        host_detected = backend == "host" and host_ap_running()
+
+        if self._mock:
+            running = self._started
+        elif backend == "host":
+            running = host_detected and not self._error
+            if running and not self._started:
+                self._started = True
+                self._ap_mode = self._ap_mode or "host"
+                self._backend = "host"
+                if self._sta_interface is None:
+                    self._sta_interface = self._detect_sta_interface()
         else:
-            running = self._started and not self._error and (
-                self._mock
-                or self._backend == "host"
-                or self._hostapd_is_running()
-            )
+            running = self._started and not self._error and self._hostapd_is_running()
+
         iface = self._active_interface or self.resolved_interface()
         return WifiApStatus(
             enabled=self._wifi.enabled,
@@ -105,6 +120,8 @@ class WifiApManager:
             ap_interface=self._active_interface,
             ap_mode=self._ap_mode,
             ap_ip=self._wifi.ap_ip,
+            backend=backend,
+            host_ap_detected=host_detected,
             error=self._error,
         )
 

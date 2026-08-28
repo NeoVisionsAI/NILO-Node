@@ -441,7 +441,7 @@ mask_secret_hint() {
 
 prompt_env_secret() {
   local key="$1" label="$2" fallback="${3:-}"
-  local current input new_val
+  local current input confirm new_val
 
   current="$(read_env_var "${key}")"
 
@@ -459,40 +459,62 @@ prompt_env_secret() {
     return 0
   fi
 
-  echo ""
-  printf '%s [%s]\n' "${label}" "$(mask_secret_hint "${current}")" >&2
-  printf '  Enter=mantener, %ds sin escribir=mantener (primera vez: aleatoria): ' "${CREDENTIAL_PROMPT_TIMEOUT}" >&2
-  input=""
-  if ! read -r -s -t "${CREDENTIAL_PROMPT_TIMEOUT}" input; then
-    echo "" >&2
+  while true; do
+    echo ""
+    printf '%s [%s]\n' "${label}" "$(mask_secret_hint "${current}")" >&2
+    printf '  Enter=mantener, %ds sin escribir=mantener (primera vez: aleatoria): ' "${CREDENTIAL_PROMPT_TIMEOUT}" >&2
     input=""
-  else
-    echo "" >&2
-  fi
+    if ! read -r -s -t "${CREDENTIAL_PROMPT_TIMEOUT}" input; then
+      echo "" >&2
+      input=""
+    else
+      echo "" >&2
+    fi
 
-  if [[ -z "${input}" ]]; then
-    if [[ -n "${current}" ]]; then
-      log "${label}: se mantiene la anterior"
+    if [[ -z "${input}" ]]; then
+      if [[ -n "${current}" ]]; then
+        log "${label}: se mantiene la anterior"
+        return 0
+      fi
+      if [[ -n "${fallback}" ]]; then
+        new_val="${fallback}"
+      else
+        new_val="$(gen_secret)"
+      fi
+      set_env_var "${key}" "${new_val}"
+      ENV_SECRETS_CHANGED=1
+      log "${label}: generada automáticamente (primera vez)"
       return 0
     fi
-    if [[ -n "${fallback}" ]]; then
-      new_val="${fallback}"
-    else
-      new_val="$(gen_secret)"
-    fi
-    set_env_var "${key}" "${new_val}"
-    ENV_SECRETS_CHANGED=1
-    log "${label}: generada automáticamente (primera vez)"
-    return 0
-  fi
 
-  if [[ "${input}" != "${current}" ]]; then
-    set_env_var "${key}" "${input}"
-    ENV_SECRETS_CHANGED=1
-    log "${label}: actualizada"
-  else
-    log "${label}: sin cambios"
-  fi
+    printf '  Repite para confirmar (%ds): ' "${CREDENTIAL_PROMPT_TIMEOUT}" >&2
+    confirm=""
+    if ! read -r -s -t "${CREDENTIAL_PROMPT_TIMEOUT}" confirm; then
+      echo "" >&2
+      confirm=""
+    else
+      echo "" >&2
+    fi
+
+    if [[ -z "${confirm}" ]]; then
+      warn "${label}: confirmación vacía o timeout — no se guardó, inténtalo de nuevo"
+      continue
+    fi
+
+    if [[ "${input}" != "${confirm}" ]]; then
+      warn "${label}: las contraseñas no coinciden — inténtalo de nuevo"
+      continue
+    fi
+
+    if [[ "${input}" != "${current}" ]]; then
+      set_env_var "${key}" "${input}"
+      ENV_SECRETS_CHANGED=1
+      log "${label}: actualizada"
+    else
+      log "${label}: sin cambios"
+    fi
+    return 0
+  done
 }
 
 configure_credentials_interactive() {
