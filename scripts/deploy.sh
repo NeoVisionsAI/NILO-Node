@@ -305,8 +305,8 @@ restart_wifi_ap() {
     fi
     [[ -f "${run}" ]] || { warn "wifi-ap-run.sh not found"; return 1; }
     log "Reiniciando WiFi AP (backend=host)..."
-    NILO_WIFI_ALLOW_HOST_SCRIPTS=1 NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${run}" restart \
-      || warn "wifi-ap-run.sh restart failed"
+    NILO_INSTALL_DIR="${NILO_INSTALL_DIR}" bash "${run}" up \
+      || warn "wifi-ap-run.sh up failed"
     return 0
   fi
 

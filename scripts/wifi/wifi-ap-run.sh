@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
 # NILO-Node WiFi AP on the HOST (NiloCardmed-style: uap0 + STA on wlp3s0).
 #
-# ⚠️  SOLO en el mini PC destino. NO ejecutar en el PC de desarrollo.
-#     Requiere: NILO_WIFI_ALLOW_HOST_SCRIPTS=1
+# ⚠️  SOLO en el mini PC destino (wifi.hardware_ap=true). NO ejecutar en el portátil dev.
 #
-# Usage:
-#   sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh start|stop|restart|status
+# Usage (un solo comando recomendado):
+#   sudo ./scripts/wifi/wifi-ap-run.sh up
 #
-# Config via env (set in /opt/nilo-node/.env or export):
-#   NILO_INSTALL_DIR, WIFI_STA_INTERFACE, WIFI_AP_INTERFACE, WIFI_AP_IP,
-#   WIFI_COUNTRY_CODE, NILO_WIFI_PASSWORD, WIFI_SSID (optional override)
+# También: start | stop | restart (=up) | status | check
+#
+# Config: NILO_INSTALL_DIR, .env (NILO_WIFI_PASSWORD), config/nilo-node.yaml
 
 set -euo pipefail
 
 ACTION="${1:-status}"
-if [[ "${ACTION}" != "status" && "${NILO_WIFI_ALLOW_HOST_SCRIPTS:-}" != "1" ]]; then
-  echo "ERROR: Refusing to modify WiFi. Set NILO_WIFI_ALLOW_HOST_SCRIPTS=1 on the target mini PC only." >&2
-  exit 1
-fi
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 sync_paths() {
@@ -25,6 +20,7 @@ sync_paths() {
   RUNTIME_DIR="${INSTALL_DIR}/wifi-runtime"
   ENV_FILE="${INSTALL_DIR}/.env"
   PID_DIR="/run/nilo-node-wifi"
+  PREFERRED_2G_BSSID_FILE="${RUNTIME_DIR}/preferred-2g-bssid"
 }
 
 sync_paths
@@ -39,6 +35,8 @@ load_env() {
   sync_paths
 }
 
+load_env
+
 WIFI_STA_INTERFACE="${WIFI_STA_INTERFACE:-}"
 WIFI_AP_INTERFACE="${WIFI_AP_INTERFACE:-auto}"
 WIFI_AP_IP="${WIFI_AP_IP:-192.168.50.1}"
@@ -50,8 +48,203 @@ AP_CREATE_PREF=""
 
 log() { printf '[nilo-wifi-ap] %s\n' "$*"; }
 warn() { printf '[nilo-wifi-ap] WARN: %s\n' "$*" >&2; }
+die() { warn "$*"; exit 1; }
 
-[[ "${EUID}" -eq 0 ]] || { echo "Run as root" >&2; exit 1; }
+hardware_ap_enabled() {
+  local cfg="${INSTALL_DIR}/config/nilo-node.yaml"
+  [[ ! -f "${cfg}" ]] && return 0
+  python3 - "${cfg}" <<'PY' 2>/dev/null || return 0
+import sys, yaml
+wifi = (yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}).get("wifi") or {}
+sys.exit(1 if wifi.get("hardware_ap") is False else 0)
+PY
+}
+
+if [[ "${ACTION}" != "status" && "${ACTION}" != "check" ]]; then
+  [[ "${EUID}" -eq 0 ]] || die "Ejecuta como root: sudo $0 ${ACTION}"
+  hardware_ap_enabled || die "wifi.hardware_ap=false — omitido (seguridad en portátiles dev)"
+  export NILO_WIFI_ALLOW_HOST_SCRIPTS=1
+fi
+
+sta_link_ssid() {
+  local sta="$1"
+  iw dev "${sta}" link 2>/dev/null | awk '/SSID:/ { print $2; exit }'
+}
+
+sta_is_2ghz() {
+  local sta="$1" freq
+  freq="$(sta_link_freq_mhz "${sta}")"
+  [[ -n "${freq}" && "${freq}" -ge 2412 && "${freq}" -le 2484 ]]
+}
+
+report_sta_suitability() {
+  local sta="$1" freq ch ssid
+  freq="$(sta_link_freq_mhz "${sta}")"
+  ch="$(detect_sta_channel "${sta}")"
+  ssid="$(sta_link_ssid "${sta}")"
+  echo "=== Comprobación red STA (internet del mini PC) ==="
+  echo "  Interfaz: ${sta}"
+  echo "  SSID:     ${ssid:-?}"
+  if [[ -n "${freq}" ]]; then
+    echo "  Freq:     ${freq} MHz, canal ${ch}"
+  else
+    echo "  Freq:     (sin enlace)"
+  fi
+  if [[ "${WIFI_DEDICATED_AP:-0}" == "1" ]]; then
+    echo "  Modo:     AP dedicado (Ethernet) — no requiere STA 2.4 GHz"
+    return 0
+  fi
+  if sta_is_2ghz "${sta}"; then
+    echo "  Estado:   ✓ OK — 2.4 GHz, apto para AP+STA concurrente"
+    return 0
+  fi
+  if is_dfs_channel "${ch}" || [[ -n "${freq}" && "${freq}" -ge 5000 ]]; then
+    echo "  Estado:   ✗ NO apto — 5 GHz/DFS (AP+STA no funciona en este chipset)"
+    echo "  Acción:   reconectar a BSSID 2.4 GHz (automático con: sudo $0 up)"
+    return 1
+  fi
+  echo "  Estado:   ? revisar enlace"
+  return 1
+}
+
+router_wifi_password() {
+  local sta="$1" conn pass
+  pass="${WIFI_ROUTER_PASSWORD:-${ROUTER_WIFI_PASSWORD:-}}"
+  [[ -n "${pass}" ]] && { printf '%s' "${pass}"; return; }
+  command -v nmcli >/dev/null 2>&1 || return 1
+  conn="$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null \
+    | awk -F: -v d="${sta}" '$2 == d { print $1; exit }')"
+  [[ -n "${conn}" ]] || return 1
+  nmcli -s -g 802-11-wireless-security.psk connection show "${conn}" 2>/dev/null || true
+}
+
+normalize_ssid_base() {
+  # MOVISTAR_PLUS_4380 → MOVISTAR_4380 para emparejar 2.4/5G
+  local s="$1"
+  s="${s/PLUS_/}"
+  s="${s/_PLUS/}"
+  printf '%s' "${s}"
+}
+
+find_2g_bssid() {
+  local want_ssid="$1"
+  local base preferred line ssid bssid freq
+  base="$(normalize_ssid_base "${want_ssid}")"
+  if [[ -f "${PREFERRED_2G_BSSID_FILE}" ]]; then
+    preferred="$(tr '[:upper:]' '[:lower:]' < "${PREFERRED_2G_BSSID_FILE}" | tr -d '[:space:]')"
+    [[ -n "${preferred}" ]] && { echo "${preferred}"; return 0; }
+  fi
+  command -v nmcli >/dev/null 2>&1 || return 1
+  nmcli dev wifi rescan 2>/dev/null || true
+  sleep 4
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    ssid="${line%%:*}"
+    rest="${line#*:}"
+    bssid="${rest%%:*}"
+    freq="${rest##*:}"
+    bssid="${bssid//\\:/:}"
+    freq="${freq// MHz/}"
+    freq="${freq// /}"
+    [[ "${freq}" =~ ^[0-9]+$ ]] || continue
+    [[ "${freq}" -lt 2412 || "${freq}" -gt 2484 ]] && continue
+    if [[ "${ssid}" == "${want_ssid}" || "${ssid}" == "${base}" ]] \
+      || [[ "$(normalize_ssid_base "${ssid}")" == "${base}" ]]; then
+      printf '%s' "${bssid}" | tr '[:upper:]' '[:lower:]'
+      return 0
+    fi
+  done < <(nmcli -t -f SSID,BSSID,FREQ dev wifi list 2>/dev/null)
+  return 1
+}
+
+ensure_sta_2ghz() {
+  local sta="$1"
+  [[ "${WIFI_DEDICATED_AP:-0}" == "1" ]] && return 0
+  [[ "${WIFI_SKIP_STA_FIX:-0}" == "1" ]] && return 0
+  if sta_is_2ghz "${sta}"; then
+    log "STA ${sta} ya en 2.4 GHz ($(sta_link_freq_mhz "${sta}") MHz)"
+    return 0
+  fi
+
+  command -v nmcli >/dev/null 2>&1 \
+    || die "STA en 5 GHz y nmcli no disponible — conecta manualmente al 2.4 GHz o usa WIFI_DEDICATED_AP=1"
+
+  local ssid pass bssid
+  ssid="${WIFI_STA_SSID:-$(sta_link_ssid "${sta}")}"
+  [[ -n "${ssid}" ]] || die "No hay SSID activo en ${sta} — conecta el mini PC al WiFi del router primero"
+
+  pass="$(router_wifi_password "${sta}")"
+  [[ -n "${pass}" ]] || die "Sin clave del router. Pon WIFI_ROUTER_PASSWORD en ${ENV_FILE} o guarda la red en NetworkManager"
+
+  bssid="$(find_2g_bssid "${ssid}")" || die "No se encontró BSSID 2.4 GHz para SSID ${ssid}. Escanea: nmcli -t -f SSID,BSSID,FREQ dev wifi list"
+
+  log "Reconectando ${sta} a ${ssid} vía 2.4 GHz (BSSID ${bssid})..."
+  nmcli dev disconnect "${sta}" 2>/dev/null || true
+  sleep 1
+  nmcli dev wifi connect "${ssid}" password "${pass}" ifname "${sta}" bssid "${bssid}" \
+    || die "nmcli no pudo conectar al BSSID 2.4 GHz"
+  sleep 3
+
+  if ! sta_is_2ghz "${sta}"; then
+    die "Tras reconectar sigue en $(sta_link_freq_mhz "${sta}") MHz — prueba Ethernet + WIFI_DEDICATED_AP=1"
+  fi
+  echo "${bssid}" > "${PREFERRED_2G_BSSID_FILE}"
+  log "STA en 2.4 GHz ($(sta_link_freq_mhz "${sta}") MHz) — guardado BSSID en ${PREFERRED_2G_BSSID_FILE}"
+  return 0
+}
+
+full_cleanup() {
+  local sta="${1:-}"
+  log "Limpieza completa (hostapd, dnsmasq, interfaces AP)..."
+  pkill -f "${RUNTIME_DIR}/dnsmasq.conf" 2>/dev/null || true
+  rm -f "${PID_DIR}/dnsmasq.pid" 2>/dev/null || true
+  kill_nilo_hostapd
+  kill_all_hostapd
+  rfkill unblock wifi 2>/dev/null || true
+  if [[ -n "${sta}" ]]; then
+    cleanup_phy_ap_ifaces "${sta}"
+  else
+    local s
+    s="$(detect_sta_iface)"
+    [[ -n "${s}" ]] && cleanup_phy_ap_ifaces "${s}"
+  fi
+  sleep 0.5
+  log "Limpieza completada"
+}
+
+up_ap() {
+  load_env
+  local sta
+  sta="$(detect_sta_iface)"
+  [[ -n "${sta}" ]] || die "No hay interfaz WiFi STA"
+
+  report_sta_suitability "${sta}" || true
+  echo ""
+
+  full_cleanup "${sta}"
+
+  if [[ "${WIFI_DEDICATED_AP:-0}" != "1" ]]; then
+    ensure_sta_2ghz "${sta}" || return 1
+    report_sta_suitability "${sta}" || return 1
+    echo ""
+  fi
+
+  start_ap_core
+  log "✓ Listo — portal http://${WIFI_AP_IP}:8080/setup/  |  comprobar: $0 status"
+}
+
+check_ap() {
+  load_env
+  local sta
+  sta="$(detect_sta_iface)"
+  [[ -n "${sta}" ]] || { die "No hay interfaz WiFi STA"; }
+  if report_sta_suitability "${sta}"; then
+    log "Listo para: sudo $0 up"
+    exit 0
+  fi
+  log "Ejecuta: sudo $0 up  (reconectará a 2.4 GHz y arrancará el AP)"
+  exit 1
+}
 
 detect_sta_iface() {
   if [[ -n "${WIFI_STA_INTERFACE}" ]]; then
@@ -343,13 +536,14 @@ print_dfs_workaround() {
   local freq
   freq="$(sta_link_freq_mhz "$(detect_sta_iface)")"
   warn "Canal ${ch} (${freq:+"~${freq} MHz "}5 GHz DFS). Este chipset no pasa CAC DFS (start_dfs_cac -1)."
-  warn "Solución A: conecta el mini PC al WiFi 2.4 GHz del router (freq 2412–2484 MHz):"
-  warn "  nmcli -f SSID,FREQ,SIGNAL dev wifi list | awk '\$2>=2412 && \$2<=2484'"
-  warn "  sudo nmcli dev wifi connect \"SSID_2.4G\" password \"TU_CLAVE\""
-  warn "  iw dev wlp3s0 link   # freq debe ser ~2437, no 5540"
-  warn "  sudo NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
+  warn "Solución A (automática): pon WIFI_ROUTER_PASSWORD en ${ENV_FILE} y ejecuta:"
+  warn "  sudo $0 up"
+  warn "  (reconecta al BSSID 2.4 GHz y arranca el AP)"
+  warn "Solución manual:"
+  warn "  nmcli -t -f SSID,BSSID,FREQ dev wifi list | grep -i TU_SSID"
+  warn "  sudo nmcli dev wifi connect \"SSID\" password \"CLAVE\" ifname wlp3s0 bssid XX:XX:..."
   warn "Solución B (Ethernet): cable + AP dedicado 2.4 GHz:"
-  warn "  sudo WIFI_DEDICATED_AP=1 NILO_WIFI_ALLOW_HOST_SCRIPTS=1 ./scripts/wifi/wifi-ap-run.sh restart"
+  warn "  sudo WIFI_DEDICATED_AP=1 $0 up"
 }
 
 abort_if_sta_on_dfs() {
@@ -426,8 +620,7 @@ dhcp-option=option:dns-server,${WIFI_AP_IP}
 EOF
 }
 
-start_ap() {
-  load_env
+start_ap_core() {
   local sta ssid pass ap
   sta="$(detect_sta_iface)"
   [[ -n "${sta}" ]] || { warn "No WiFi STA interface"; return 1; }
@@ -523,6 +716,8 @@ start_ap() {
   return 1
 }
 
+start_ap() { up_ap; }
+
 stop_ap() {
   load_env
   local sta
@@ -559,7 +754,7 @@ status_ap() {
   if [[ -f "${RUNTIME_DIR}/hostapd.conf" ]]; then
     grep -E '^(interface|ssid|channel|hw_mode|ieee80211h)=' "${RUNTIME_DIR}/hostapd.conf" 2>/dev/null || true
   else
-    echo "(no hostapd.conf yet — run start)"
+    echo "(no hostapd.conf yet — run: sudo $0 up)"
   fi
   pgrep -af 'hostapd|dnsmasq' 2>/dev/null | grep -E 'nilo|wifi-runtime' || echo "(no nilo hostapd/dnsmasq)"
   if ! pgrep -f "${RUNTIME_DIR}/hostapd.conf" >/dev/null 2>&1; then
@@ -570,8 +765,8 @@ status_ap() {
     fi
     if is_dfs_channel "${ch}"; then
       echo ""
-      echo "⚠ STA en canal DFS ${ch}: conecta a WiFi 2.4 GHz del router y reinicia el AP,"
-      echo "  o usa Ethernet +: sudo WIFI_DEDICATED_AP=1 NILO_WIFI_ALLOW_HOST_SCRIPTS=1 $0 restart"
+      echo "⚠ STA en canal DFS ${ch}: ejecuta sudo $0 up (reconecta a 2.4 GHz y arranca AP),"
+      echo "  o usa Ethernet + WIFI_DEDICATED_AP=1"
     fi
   fi
   curl -sf "http://${WIFI_AP_IP}:8080/api/v1/health" >/dev/null && echo "HTTP OK on ${WIFI_AP_IP}:8080" || echo "HTTP not reachable on ${WIFI_AP_IP}:8080"
@@ -579,9 +774,16 @@ status_ap() {
 
 load_env
 case "${ACTION}" in
-  start) start_ap ;;
+  up|restart|start) up_ap ;;
   stop) stop_ap ;;
-  restart) stop_ap; start_ap ;;
   status) status_ap ;;
-  *) echo "Usage: $0 start|stop|restart|status" >&2; exit 1 ;;
+  check) check_ap ;;
+  *)
+    echo "Usage: sudo $0 up|check|status|stop" >&2
+    echo "  up     — limpia, comprueba 2.4 GHz, reconecta si hace falta, arranca AP (recomendado)" >&2
+    echo "  check  — solo comprueba si la STA es apta (2.4 GHz)" >&2
+    echo "  status — estado actual" >&2
+    echo "  stop   — parar AP" >&2
+    exit 1
+    ;;
 esac
