@@ -13,7 +13,7 @@
 #   sudo ./scripts/deploy.sh uninstall            # stop (+ optional data wipe)
 #
 # Environment (optional):
-#   NILO_INSTALL_DIR=/opt/nilo-node
+#   NILO_INSTALL_DIR=/opt/nilo-node   # default when not run from a git clone
 #   NILO_REPO=https://github.com/NeoVisions/NILO-Node.git
 #   NILO_REPO_BRANCH=main
 #   NILO_IMAGE=ghcr.io/org/nilo-node:latest   # skip build, pull from registry
@@ -30,7 +30,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-NILO_INSTALL_DIR="${NILO_INSTALL_DIR:-/opt/nilo-node}"
+if [[ -z "${NILO_INSTALL_DIR:-}" ]]; then
+  if [[ -d "${SOURCE_REPO_ROOT}/.git" ]]; then
+    NILO_INSTALL_DIR="${SOURCE_REPO_ROOT}"
+  else
+    NILO_INSTALL_DIR="/opt/nilo-node"
+  fi
+fi
 NILO_REPO="${NILO_REPO:-https://github.com/NeoVisions/NILO-Node.git}"
 NILO_REPO_BRANCH="${NILO_REPO_BRANCH:-main}"
 NILO_IMAGE="${NILO_IMAGE:-}"

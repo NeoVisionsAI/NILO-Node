@@ -46,6 +46,7 @@ WIFI_COUNTRY_CODE="${WIFI_COUNTRY_CODE:-ES}"
 DHCP_START="${WIFI_DHCP_START:-192.168.50.10}"
 DHCP_END="${WIFI_DHCP_END:-192.168.50.100}"
 WIFI_CHANNEL="${WIFI_CHANNEL:-6}"
+AP_CREATE_PREF=""
 
 log() { printf '[nilo-wifi-ap] %s\n' "$*"; }
 warn() { printf '[nilo-wifi-ap] WARN: %s\n' "$*" >&2; }
@@ -117,28 +118,55 @@ detect_ap_iface() {
     }'
 }
 
+hostapd_bin() {
+  if [[ -n "${HOSTAPD_BIN:-}" && -x "${HOSTAPD_BIN}" ]]; then
+    echo "${HOSTAPD_BIN}"
+    return
+  fi
+  command -v hostapd 2>/dev/null || echo hostapd
+}
+
 create_virtual_ap_iface() {
-  local sta="$1" ap="$2" ap_mac="$3" phy
+  local sta="$1" ap="$2" ap_mac="$3" prefer="${4:-__ap}"
+  local phy
   phy="$(phy_for_sta "${sta}")"
 
-  # __ap + unique MAC first (managed → hostapd segfault on some iwlwifi builds)
-  if iw dev "${sta}" interface add "${ap}" type __ap addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) on ${sta}"
-    return 0
-  fi
-  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type __ap addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (__ap, mac=${ap_mac}) via ${phy}"
-    return 0
-  fi
-  if iw dev "${sta}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) on ${sta}"
-    return 0
-  fi
-  if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type managed addr "${ap_mac}" 2>/dev/null; then
-    log "Created virtual AP ${ap} (managed, mac=${ap_mac}) via ${phy}"
-    return 0
+  _try_create() {
+    local typ="$1"
+    if iw dev "${sta}" interface add "${ap}" type "${typ}" addr "${ap_mac}" 2>/dev/null; then
+      log "Created virtual AP ${ap} (${typ}, mac=${ap_mac}) on ${sta}"
+      return 0
+    fi
+    if [[ -n "${phy}" ]] && iw "${phy}" interface add "${ap}" type "${typ}" addr "${ap_mac}" 2>/dev/null; then
+      log "Created virtual AP ${ap} (${typ}, mac=${ap_mac}) via ${phy}"
+      return 0
+    fi
+    return 1
+  }
+
+  if [[ "${prefer}" == "managed" ]]; then
+    _try_create managed && return 0
+    _try_create __ap && return 0
+  else
+    _try_create __ap && return 0
+    _try_create managed && return 0
   fi
   return 1
+}
+
+kill_all_hostapd() {
+  if pgrep -x hostapd >/dev/null 2>&1; then
+    warn "Deteniendo procesos hostapd huérfanos"
+    pkill -x hostapd 2>/dev/null || true
+    sleep 0.5
+  fi
+}
+
+prepare_ap_for_hostapd() {
+  local ap="$1"
+  ip link set "${ap}" down 2>/dev/null || true
+  ip addr flush dev "${ap}" 2>/dev/null || true
+  sleep 0.3
 }
 
 kill_nilo_hostapd() {
@@ -162,15 +190,19 @@ kill_nilo_hostapd() {
 }
 
 start_hostapd_daemon() {
+  local ap="${1:-}"
   local hostapd_log="${RUNTIME_DIR}/hostapd.log"
   local hostapd_conf="${RUNTIME_DIR}/hostapd.conf"
+  local bin
+  bin="$(hostapd_bin)"
   kill_nilo_hostapd
+  kill_all_hostapd
+  [[ -n "${ap}" ]] && prepare_ap_for_hostapd "${ap}"
   rm -f "${hostapd_log}"
-  if hostapd -t "${hostapd_conf}" >/dev/null 2>&1; then
-    log "hostapd config OK (-t)"
-  fi
+  # hostapd -t provoca segfault en algunos builds iwlwifi — no usar
+  log "Arrancando ${bin} ($(${bin} -v 2>&1 | head -1 || true))"
   set +e
-  hostapd -B -P "${PID_DIR}/hostapd.pid" "${hostapd_conf}" >>"${hostapd_log}" 2>&1
+  "${bin}" -B -P "${PID_DIR}/hostapd.pid" "${hostapd_conf}" >>"${hostapd_log}" 2>&1
   local rc=$?
   set -e
   if [[ "${rc}" -ne 0 ]]; then
@@ -241,19 +273,28 @@ build_ssid() {
 
 ensure_ap_iface() {
   local sta="$1" ap_cfg="$2"
-  local ap try_names created="" ap_mac
+  local ap try_names created="" ap_mac create_pref="__ap"
   rfkill unblock wifi 2>/dev/null || true
   iw reg set "${WIFI_COUNTRY_CODE}" 2>/dev/null || true
   cleanup_phy_ap_ifaces "${sta}"
 
   ap_mac="$(derive_ap_mac "${sta}")" || { warn "Could not derive AP MAC from ${sta}"; return 1; }
 
+  # 2.4 GHz: managed + hostapd funciona mejor en iwlwifi AP+STA
+  local sta_ch
+  sta_ch="$(detect_sta_channel "${sta}")"
+  if [[ "${sta_ch}" -le 14 ]]; then
+    create_pref="managed"
+  fi
+  [[ -n "${WIFI_AP_CREATE_TYPE:-}" ]] && create_pref="${WIFI_AP_CREATE_TYPE}"
+  AP_CREATE_PREF="${create_pref}"
+
   try_names="$(resolve_ap_name "${sta}" "${ap_cfg}") ${sta}-ap niloap0 uap0"
   for ap in ${try_names}; do
     [[ "${ap}" == "${sta}" ]] && continue
     iw dev "${ap}" del 2>/dev/null || ip link del "${ap}" 2>/dev/null || true
     sleep 0.2
-    if create_virtual_ap_iface "${sta}" "${ap}" "${ap_mac}"; then
+    if create_virtual_ap_iface "${sta}" "${ap}" "${ap_mac}" "${create_pref}"; then
       created="${ap}"
       break
     fi
@@ -413,24 +454,30 @@ start_ap() {
 
   local hostapd_log="${RUNTIME_DIR}/hostapd.log"
   local hostapd_rc=0
-  if start_hostapd_daemon; then
+  if start_hostapd_daemon "${ap}"; then
     hostapd_rc=0
   else
     hostapd_rc=$?
     if [[ "${hostapd_rc}" -eq 139 || "${hostapd_rc}" -gt 128 ]]; then
-      warn "hostapd crash (rc=${hostapd_rc}) — recreando interfaz __ap y reintentando"
+      warn "hostapd crash (rc=${hostapd_rc}) — recreando interfaz (${AP_CREATE_PREF}→alt) y reintentando"
       if [[ "${AP_MODE}" == "concurrent" && -n "${sta}" ]]; then
         cleanup_phy_ap_ifaces "${sta}"
         sleep 0.5
+        if [[ "${AP_CREATE_PREF}" == "managed" ]]; then
+          WIFI_AP_CREATE_TYPE="__ap"
+        else
+          WIFI_AP_CREATE_TYPE="managed"
+        fi
         ensure_ap_iface "${sta}" "${WIFI_AP_INTERFACE}"
         ap="${WIFI_AP_INTERFACE}"
         write_configs "${ap}" "${ssid}" "${pass}"
       fi
-      if start_hostapd_daemon; then
+      if start_hostapd_daemon "${ap}"; then
         hostapd_rc=0
       else
         hostapd_rc=$?
       fi
+      unset WIFI_AP_CREATE_TYPE
     fi
   fi
 
