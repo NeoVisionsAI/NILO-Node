@@ -43,6 +43,120 @@ class CameraManager:
         self._session_manifests: dict[str, dict[str, dict]] = {}
         self._recording = False
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._last_preview_error: str | None = None
+
+    @property
+    def last_preview_error(self) -> str | None:
+        return self._last_preview_error
+
+    def _encode_jpeg(self, frame: object, *, quality: int = 80) -> bytes | None:
+        try:
+            import cv2
+
+            ok, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if ok:
+                return jpeg.tobytes()
+        except ImportError:
+            self._last_preview_error = "OpenCV (cv2) no disponible en el contenedor"
+        except Exception as exc:
+            self._last_preview_error = f"Error codificando JPEG: {exc}"
+        return None
+
+    @staticmethod
+    def _depth_to_bgr(depth: object) -> object:
+        import cv2
+        import numpy as np
+
+        arr = np.asarray(depth, dtype=np.float32)
+        arr = np.nan_to_num(arr)
+        if arr.size == 0:
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+        lo, hi = float(arr.min()), float(arr.max())
+        if hi > lo:
+            norm = ((arr - lo) / (hi - lo) * 255.0).astype(np.uint8)
+        else:
+            norm = np.zeros(arr.shape, dtype=np.uint8)
+        if norm.ndim == 2:
+            return cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+        return norm
+
+    def _synthetic_preview_frame(self, label: str) -> bytes | None:
+        try:
+            import cv2
+            import numpy as np
+
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(
+                frame,
+                label,
+                (24, 240),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (200, 200, 200),
+                2,
+            )
+            return self._encode_jpeg(frame)
+        except ImportError:
+            self._last_preview_error = "OpenCV (cv2) no disponible en el contenedor"
+            return None
+
+    async def get_preview_jpeg(self, *, wait_for_frame: bool = True) -> bytes | None:
+        self._last_preview_error = None
+
+        if self._state != CameraConnectionState.CONNECTED:
+            self._last_preview_error = "Cámara no conectada — pulsa Conectar en el portal"
+            return None
+
+        pipeline = self._pipeline
+
+        if getattr(pipeline, "mode", None) == "mock":
+            return self._synthetic_preview_frame("Mock camera preview")
+
+        if getattr(pipeline, "mode", None) == "depthai":
+            if getattr(pipeline, "_use_synthetic", False):
+                device = getattr(pipeline, "_device_id", None) or "OAK"
+                return self._synthetic_preview_frame(f"OAK {device} — modo sintético (sin graph)")
+
+            session = getattr(pipeline, "_session", None)
+            if session is None:
+                self._last_preview_error = "Pipeline DepthAI sin sesión activa — reconecta la cámara"
+                return None
+
+            attempts = 25 if wait_for_frame else 10
+            last_bundle = None
+            for attempt in range(attempts):
+                bundle = await asyncio.to_thread(session.poll)
+                last_bundle = bundle
+                if bundle is not None and bundle.rgb is not None:
+                    jpeg = self._encode_jpeg(bundle.rgb)
+                    if jpeg:
+                        return jpeg
+                if bundle is not None and bundle.depth is not None:
+                    bgr = self._depth_to_bgr(bundle.depth)
+                    jpeg = self._encode_jpeg(bgr)
+                    if jpeg:
+                        if bundle.rgb is None:
+                            self._last_preview_error = None
+                        return jpeg
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.12)
+
+            if last_bundle is None:
+                self._last_preview_error = (
+                    "Sin respuesta del dispositivo OAK — revisa PoE/USB y la IP en configuración"
+                )
+            elif not getattr(session, "is_open", True):
+                self._last_preview_error = "Enlace DepthAI cerrado — pulsa Conectar de nuevo"
+            else:
+                self._last_preview_error = (
+                    "Cámara conectada pero sin frames RGB/ToF aún — "
+                    "espera unos segundos o revisa cable/red PoE"
+                )
+            logger.debug("Camera preview unavailable: %s", self._last_preview_error)
+            return None
+
+        self._last_preview_error = "Preview no disponible para este pipeline"
+        return None
 
     def set_campaign(self, campaign: Campaign | None) -> None:
         self._active_campaign = campaign
@@ -80,49 +194,6 @@ class CameraManager:
             tof=camera_cfg.defaults.tof_enabled,
             pose=camera_cfg.defaults.pose_enabled,
         )
-
-    async def get_preview_jpeg(self) -> bytes | None:
-        from nilo_node.camera.models import CameraConnectionState
-
-        if self._state != CameraConnectionState.CONNECTED:
-            return None
-
-        pipeline = self._pipeline
-        if hasattr(pipeline, "_session") and pipeline._session is not None and not getattr(
-            pipeline, "_use_synthetic", True
-        ):
-            bundle = await asyncio.to_thread(pipeline._session.poll)
-            if bundle is not None and bundle.rgb is not None:
-                try:
-                    import cv2
-
-                    ok, jpeg = cv2.imencode(".jpg", bundle.rgb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    if ok:
-                        return jpeg.tobytes()
-                except ImportError:
-                    pass
-
-        if self._pipeline.mode == "mock":
-            try:
-                import cv2
-                import numpy as np
-
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(
-                    frame,
-                    "Mock camera preview",
-                    (40, 240),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (200, 200, 200),
-                    2,
-                )
-                ok, jpeg = cv2.imencode(".jpg", frame)
-                if ok:
-                    return jpeg.tobytes()
-            except ImportError:
-                return None
-        return None
 
     def _use_depthai(self, devices: list[CameraDeviceInfo]) -> bool:
         return should_use_depthai_hardware(
@@ -188,6 +259,7 @@ class CameraManager:
             pipeline_mode=self._pipeline.mode,  # type: ignore[arg-type]
             available_devices=devices,
             last_error=self._last_error,
+            last_preview_error=self._last_preview_error,
             depthai_available=depthai_available(),
         )
 

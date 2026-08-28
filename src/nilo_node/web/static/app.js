@@ -249,6 +249,7 @@ function renderCameraStatusSummary(s) {
     ["Cámaras encontradas", String(s.available_devices?.length ?? 0)],
   ];
   if (s.last_error) rows.push(["Último error", s.last_error]);
+  if (s.last_preview_error) rows.push(["Preview", s.last_preview_error]);
   $("cam-status-summary").innerHTML = rows
     .map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`)
     .join("");

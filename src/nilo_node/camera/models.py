@@ -69,4 +69,5 @@ class CameraStatus(BaseModel):
     pipeline_mode: Literal["depthai", "mock"] = "mock"
     available_devices: list[CameraDeviceInfo] = Field(default_factory=list)
     last_error: str | None = None
+    last_preview_error: str | None = None
     depthai_available: bool = False

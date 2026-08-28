@@ -63,10 +63,14 @@ def create_camera_router(
 
     @router.get("/preview", dependencies=[auth])
     async def camera_preview() -> Response:
-        jpeg = await camera.get_preview_jpeg()
+        jpeg = await camera.get_preview_jpeg(wait_for_frame=False)
         if jpeg is None:
             cam_status = camera.get_status()
-            detail = cam_status.last_error or "Camera not connected or preview unavailable"
+            detail = (
+                camera.last_preview_error
+                or cam_status.last_error
+                or "Camera not connected or preview unavailable"
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=detail,
@@ -75,11 +79,15 @@ def create_camera_router(
 
     @router.post("/snapshot", dependencies=[auth])
     async def camera_snapshot() -> Response:
-        """Capture a single JPEG frame (same as preview; explicit action for setup UI)."""
-        jpeg = await camera.get_preview_jpeg()
+        """Capture a single JPEG frame (waits up to ~3s for first frame)."""
+        jpeg = await camera.get_preview_jpeg(wait_for_frame=True)
         if jpeg is None:
-            st = camera.get_status()
-            detail = st.last_error or "No hay frame — conecta la cámara primero"
+            cam_status = camera.get_status()
+            detail = (
+                camera.last_preview_error
+                or cam_status.last_error
+                or "No hay frame — conecta la cámara primero"
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=detail,
