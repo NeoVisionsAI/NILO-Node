@@ -65,8 +65,8 @@ def create_camera_router(
     async def camera_preview() -> Response:
         jpeg = await camera.get_preview_jpeg()
         if jpeg is None:
-            status = camera.get_status()
-            detail = status.last_error or "Camera not connected or preview unavailable"
+            cam_status = camera.get_status()
+            detail = cam_status.last_error or "Camera not connected or preview unavailable"
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=detail,

@@ -16,37 +16,95 @@ const CAM_STATE_LABELS = {
 
 const $ = (id) => document.getElementById(id);
 
+let loadingCount = 0;
+
 function authHeaders() {
   const token = localStorage.getItem(TOKEN_KEY);
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function startLoading() {
+  loadingCount += 1;
+  $("api-loading-bar").classList.add("active");
+}
+
+function stopLoading() {
+  loadingCount = Math.max(0, loadingCount - 1);
+  if (loadingCount === 0) $("api-loading-bar").classList.remove("active");
+}
+
 function showToast(msg, type = "ok") {
-  const el = $("toast");
+  if (!msg) return;
+  const host = $("toast-host");
+  const el = document.createElement("div");
+  el.className = `toast ${type === "error" ? "error" : "ok"}`;
   el.textContent = msg;
-  el.className = `toast ${type}`;
-  el.classList.remove("hidden");
-  setTimeout(() => el.classList.add("hidden"), 3500);
+  host.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = "0";
+    el.style.transform = "translateY(8px)";
+    el.style.transition = "opacity 0.25s ease, transform 0.25s ease";
+    setTimeout(() => el.remove(), 280);
+  }, 4000);
+}
+
+async function apiRequest(path, options = {}) {
+  const {
+    silent = false,
+    successMessage = null,
+    jsonBody = true,
+    method = "GET",
+    body,
+    headers: extraHeaders = {},
+  } = options;
+
+  startLoading();
+  try {
+    const headers = { ...authHeaders(), ...extraHeaders };
+    if (jsonBody && body !== undefined && !(body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+    }
+
+    const res = await fetch(path, {
+      method,
+      body,
+      headers,
+    });
+
+    if (res.status === 401) {
+      logout();
+      const msg = "Sesión expirada";
+      if (!silent) showToast(msg, "error");
+      throw new Error(msg);
+    }
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const detail = err.detail;
+      const msg =
+        typeof detail === "string"
+          ? detail
+          : detail
+            ? JSON.stringify(detail)
+            : res.statusText || `Error HTTP ${res.status}`;
+      if (!silent) showToast(msg, "error");
+      throw new Error(msg);
+    }
+
+    if (successMessage && !silent) showToast(successMessage, "ok");
+    return res;
+  } finally {
+    stopLoading();
+  }
 }
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(options.headers || {}),
-    },
+  const { body, method = "GET", ...rest } = options;
+  const res = await apiRequest(path, {
+    ...rest,
+    method,
+    body: body !== undefined ? body : undefined,
   });
-  if (res.status === 401) {
-    logout();
-    throw new Error("Sesión expirada");
-  }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const detail = err.detail;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail) || res.statusText);
-  }
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
   return res;
@@ -59,7 +117,7 @@ function showTab(name) {
   document.querySelector(`[data-tab="${name}"]`).classList.add("active");
   $("page-title").textContent = TITLES[name] || name;
   if (name === "camera") {
-    loadCameraStatus().catch(() => {});
+    loadCameraStatus({ silent: true }).catch(() => {});
   }
 }
 
@@ -88,15 +146,17 @@ function formToPatch(form) {
   return patch;
 }
 
-async function saveSettings(section, patch) {
+async function saveSettings(section, patch, label) {
   const body = { [section]: patch };
-  const r = await api("/api/v1/setup/settings", { method: "PATCH", body: JSON.stringify(body) });
-  showToast("Configuración guardada y aplicada");
-  return r;
+  return api("/api/v1/setup/settings", {
+    method: "PATCH",
+    body: JSON.stringify(body),
+    successMessage: `${label || "Configuración"} guardada y aplicada`,
+  });
 }
 
 async function loadSettingsForms() {
-  const data = await api("/api/v1/setup/settings");
+  const data = await api("/api/v1/setup/settings", { silent: true });
   const saved = data.settings || {};
   const merged = {
     camera: { ...data.live.camera, ...saved.camera },
@@ -121,8 +181,12 @@ function wifiStateLabel(wifi) {
   return "Parado";
 }
 
-async function loadDashboard() {
-  const d = await api("/api/v1/setup/dashboard");
+async function loadDashboard(options = {}) {
+  const { silent = false } = options;
+  const d = await api("/api/v1/setup/dashboard", {
+    silent,
+    successMessage: silent ? null : "Panel actualizado",
+  });
   $("node-id").textContent = d.node_id;
 
   const camCls =
@@ -205,7 +269,7 @@ function renderCameraStatusSummary(s) {
   }
 }
 
-async function showPreviewFromResponse(res) {
+async function showPreviewFromResponse(res, { notify = false } = {}) {
   const img = $("cam-preview");
   const ph = $("cam-preview-placeholder");
   if (res.ok) {
@@ -216,6 +280,7 @@ async function showPreviewFromResponse(res) {
     img.src = url;
     img.classList.remove("hidden");
     ph.classList.add("hidden");
+    if (notify) showToast("Frame capturado", "ok");
     return true;
   }
   img.classList.add("hidden");
@@ -223,37 +288,28 @@ async function showPreviewFromResponse(res) {
   const err = await res.json().catch(() => ({}));
   const msg = typeof err.detail === "string" ? err.detail : "Sin frame disponible";
   ph.textContent = msg;
+  if (notify) showToast(msg, "error");
   return false;
 }
 
-async function refreshCameraPreview() {
+async function refreshCameraPreview({ silent = true, notify = false } = {}) {
   try {
-    const res = await fetch("/api/v1/camera/preview", { headers: authHeaders() });
-    await showPreviewFromResponse(res);
-  } catch {
+    const res = await apiRequest("/api/v1/camera/preview", { silent: true, jsonBody: false });
+    await showPreviewFromResponse(res, { notify });
+  } catch (err) {
     $("cam-preview").classList.add("hidden");
     $("cam-preview-placeholder").classList.remove("hidden");
-    $("cam-preview-placeholder").textContent = "Error de red al obtener preview";
+    $("cam-preview-placeholder").textContent = err.message;
+    if (!silent || notify) showToast(err.message, "error");
   }
 }
 
-async function loadCameraStatus() {
-  const s = await api("/api/v1/camera/status");
+async function loadCameraStatus(options = {}) {
+  const { silent = false } = options;
+  const s = await api("/api/v1/camera/status", { silent });
   $("cam-status").textContent = JSON.stringify(s, null, 2);
   renderCameraStatusSummary(s);
   return s;
-}
-
-async function runCameraAction(label, fn) {
-  try {
-    const result = await fn();
-    await loadCameraStatus();
-    return result;
-  } catch (err) {
-    setCamBanner(`${label}: ${err.message}`, "err");
-    showToast(`${label}: ${err.message}`, "error");
-    throw err;
-  }
 }
 
 $("login-form").addEventListener("submit", async (e) => {
@@ -267,11 +323,13 @@ $("login-form").addEventListener("submit", async (e) => {
         password: $("password").value,
       }),
       headers: {},
+      jsonBody: true,
+      successMessage: "Sesión iniciada",
     });
     localStorage.setItem(TOKEN_KEY, data.token);
     $("login-screen").classList.add("hidden");
     $("app").classList.remove("hidden");
-    await loadDashboard();
+    await loadDashboard({ silent: true });
   } catch (err) {
     $("login-error").textContent = err.message;
     $("login-error").classList.remove("hidden");
@@ -287,61 +345,42 @@ document.querySelectorAll("[data-goto]").forEach((btn) => {
 });
 
 $("logout-btn").addEventListener("click", logout);
-$("dash-refresh").addEventListener("click", () => loadDashboard().catch(() => logout()));
+
+$("dash-refresh").addEventListener("click", () => {
+  loadDashboard().catch(() => logout());
+});
 
 $("wifi-restart").addEventListener("click", async () => {
-  try {
-    await api("/api/v1/wifi/restart", { method: "POST" });
-    showToast("WiFi reiniciado");
-    await loadDashboard();
-  } catch (err) {
-    showToast(`WiFi: ${err.message}`, "error");
-  }
+  await api("/api/v1/wifi/restart", { method: "POST", successMessage: "WiFi reiniciado" });
+  await loadDashboard({ silent: true });
 });
 
 $("wifi-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  try {
-    await saveSettings("wifi", formToPatch(e.target));
-    await loadDashboard();
-  } catch (err) {
-    showToast(err.message, "error");
-  }
+  await saveSettings("wifi", formToPatch(e.target), "WiFi");
+  await loadDashboard({ silent: true });
 });
 
 $("camera-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  try {
-    await saveSettings("camera", formToPatch(e.target));
-    await loadCameraStatus();
-  } catch (err) {
-    showToast(err.message, "error");
-  }
+  await saveSettings("camera", formToPatch(e.target), "Cámara");
+  await loadCameraStatus({ silent: true });
 });
 
 $("bt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  try {
-    await saveSettings("bluetooth", formToPatch(e.target));
-    showToast("Preferencias Bluetooth guardadas");
-  } catch (err) {
-    showToast(err.message, "error");
-  }
+  await saveSettings("bluetooth", formToPatch(e.target), "Bluetooth");
 });
 
 $("mqtt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  try {
-    await saveSettings("mqtt", formToPatch(e.target));
-    showToast("MQTT guardado (reinicia el servicio para aplicar credenciales)");
-  } catch (err) {
-    showToast(err.message, "error");
-  }
+  await saveSettings("mqtt", formToPatch(e.target), "MQTT");
+  showToast("MQTT guardado — reinicia el servicio para aplicar credenciales", "ok");
 });
 
 $("cam-discover").addEventListener("click", async () => {
-  await runCameraAction("Detectar", async () => {
-    const r = await api("/api/v1/camera/discover");
+  try {
+    const r = await api("/api/v1/camera/discover", { successMessage: "Escaneo completado" });
     const n = r.devices?.length ?? 0;
     if (n === 0) {
       showToast("No se encontró ninguna cámara OAK", "error");
@@ -353,97 +392,96 @@ $("cam-discover").addEventListener("click", async () => {
       );
     } else {
       const names = r.devices.map((d) => d.device_id).join(", ");
-      showToast(`${n} cámara(s) encontrada(s)`);
+      showToast(`${n} cámara(s) encontrada(s)`, "ok");
       setCamBanner(`Encontradas ${n}: ${names}`, "ok");
     }
     $("cam-status").textContent = JSON.stringify(r, null, 2);
-    return r;
-  });
+    await loadCameraStatus({ silent: true });
+  } catch (err) {
+    setCamBanner(`Detectar: ${err.message}`, "err");
+  }
 });
 
 $("cam-connect").addEventListener("click", async () => {
-  await runCameraAction("Conectar", async () => {
-    const s = await api("/api/v1/camera/connect", { method: "POST", body: "{}" });
+  try {
+    const s = await api("/api/v1/camera/connect", {
+      method: "POST",
+      body: "{}",
+    });
     if (s.connection_state === "error") {
       showToast(s.last_error || "Error al conectar", "error");
       setCamBanner(s.last_error || "Error al conectar", "err");
     } else if (s.connection_state === "connected") {
       showToast(
         s.pipeline_mode === "mock" ? "Conectado (modo mock)" : "Cámara conectada correctamente",
+        "ok",
       );
-      await refreshCameraPreview();
+      await refreshCameraPreview({ silent: true });
     }
-    return s;
-  });
+    await loadCameraStatus({ silent: true });
+  } catch (err) {
+    setCamBanner(`Conectar: ${err.message}`, "err");
+  }
 });
 
 $("cam-snapshot").addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/v1/camera/snapshot", {
+    const res = await apiRequest("/api/v1/camera/snapshot", {
       method: "POST",
-      headers: authHeaders(),
+      jsonBody: false,
+      successMessage: "Frame capturado",
     });
-    const ok = await showPreviewFromResponse(res);
+    const ok = await showPreviewFromResponse(res, { notify: false });
     if (ok) {
-      showToast("Frame capturado");
       setCamBanner("Frame capturado correctamente", "ok");
-    } else {
-      showToast("No se pudo capturar frame", "error");
     }
-    await loadCameraStatus();
+    await loadCameraStatus({ silent: true });
   } catch (err) {
     setCamBanner(`Captura: ${err.message}`, "err");
-    showToast(`Captura: ${err.message}`, "error");
   }
 });
 
 $("cam-disconnect").addEventListener("click", async () => {
-  await runCameraAction("Desconectar", async () => {
-    const s = await api("/api/v1/camera/disconnect", { method: "POST" });
-    $("cam-preview").classList.add("hidden");
-    $("cam-preview-placeholder").classList.remove("hidden");
-    $("cam-preview-placeholder").textContent = "Desconectada";
-    showToast("Cámara desconectada");
-    return s;
+  await api("/api/v1/camera/disconnect", {
+    method: "POST",
+    successMessage: "Cámara desconectada",
   });
+  $("cam-preview").classList.add("hidden");
+  $("cam-preview-placeholder").classList.remove("hidden");
+  $("cam-preview-placeholder").textContent = "Desconectada";
+  await loadCameraStatus({ silent: true });
 });
 
 $("bt-discover").addEventListener("click", async () => {
-  try {
-    const r = await api("/api/v1/bluetooth/discover");
-    $("bt-list").innerHTML =
-      r.devices
-        .map(
-          (d) =>
-            `<li><div><div class="name">${d.name || "Dispositivo"}</div><div class="mac">${d.mac_address}</div></div><button class="btn secondary" data-mac="${d.mac_address}">Conectar</button></li>`,
-        )
-        .join("") || "<li>No se encontraron dispositivos</li>";
-    $("bt-list").querySelectorAll("button[data-mac]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          await api("/api/v1/bluetooth/connect", {
-            method: "POST",
-            body: JSON.stringify({ mac_address: btn.dataset.mac }),
-          });
-          showToast("Micrófono conectado");
-          await loadDashboard();
-        } catch (err) {
-          showToast(err.message, "error");
-        }
+  const r = await api("/api/v1/bluetooth/discover", { successMessage: "Escaneo Bluetooth completado" });
+  $("bt-list").innerHTML =
+    r.devices
+      .map(
+        (d) =>
+          `<li><div><div class="name">${d.name || "Dispositivo"}</div><div class="mac">${d.mac_address}</div></div><button class="btn secondary" data-mac="${d.mac_address}">Conectar</button></li>`,
+      )
+      .join("") || "<li>No se encontraron dispositivos</li>";
+  $("bt-list").querySelectorAll("button[data-mac]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/v1/bluetooth/connect", {
+        method: "POST",
+        body: JSON.stringify({ mac_address: btn.dataset.mac }),
+        successMessage: "Micrófono conectado",
       });
+      await loadDashboard({ silent: true });
     });
-  } catch (err) {
-    showToast(err.message, "error");
-  }
+  });
 });
 
 if (localStorage.getItem(TOKEN_KEY)) {
   $("login-screen").classList.add("hidden");
   $("app").classList.remove("hidden");
-  loadDashboard().catch(logout);
+  loadDashboard({ silent: true }).catch(logout);
 }
 
 setInterval(() => {
   if (!localStorage.getItem(TOKEN_KEY)) return;
-  if (!$("tab-camera").classList.contains("hidden")) refreshCameraPreview();
+  if (!$("tab-camera").classList.contains("hidden")) {
+    refreshCameraPreview({ silent: true });
+  }
 }, 2500);

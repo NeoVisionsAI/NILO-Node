@@ -178,7 +178,39 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: var(--surface); border: 1px solid var(--border);
 }
 .toast.error { color: var(--danger); border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.08); }
-.toast.ok { color: var(--success); border-color: rgba(74,222,128,0.35); }
+.toast.ok { color: var(--success); border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.08); }
+
+.api-loading-bar {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 9999;
+  background: transparent; pointer-events: none; overflow: hidden;
+}
+.api-loading-bar::after {
+  content: ""; position: absolute; left: 0; top: 0; height: 100%; width: 35%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform: translateX(-100%); opacity: 0;
+}
+.api-loading-bar.active::after {
+  opacity: 1;
+  animation: api-loading-slide 0.9s ease-in-out infinite;
+}
+@keyframes api-loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.toast-host {
+  position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 9998;
+  display: flex; flex-direction: column; gap: 0.5rem; max-width: min(420px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+.toast-host .toast {
+  pointer-events: auto; box-shadow: var(--shadow);
+  animation: toast-in 0.2s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .status-banner {
   padding: 0.65rem 0.85rem; border-radius: 8px; font-size: 0.9rem; margin-bottom: 0.75rem;
