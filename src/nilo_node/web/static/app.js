@@ -403,7 +403,12 @@ function setModelLoading(active) {
 function isModelInferenceReady(model) {
   if (!model?.loaded) return false;
   if (typeof model.inference_ready === "boolean") return model.inference_ready;
-  if (model.placement === "host") return true;
+  return true;
+}
+
+function isModelDeviceReady(model) {
+  if (!model?.loaded) return false;
+  if (typeof model.device_blob_ready === "boolean") return model.device_blob_ready;
   if (model.backend === "mediapipe") return true;
   return Boolean(model.blob_path);
 }
@@ -433,16 +438,17 @@ function renderModelStatus(model) {
   const badge = $("cam-model-loaded-badge");
   if (!model) return;
   const ready = isModelInferenceReady(model);
+  const deviceReady = isModelDeviceReady(model);
   const loaded = Boolean(model.loaded);
   if (badge) {
     badge.classList.toggle("hidden", !ready);
     badge.textContent =
-      model.backend === "yolo" && model.blob_path
+      model.backend === "yolo" && deviceReady && model.placement === "device"
         ? "YOLO cargado en OAK"
         : model.backend === "mediapipe"
           ? "MediaPipe listo"
-          : "Modelo listo";
-    badge.classList.toggle("warn", loaded && !ready);
+          : "Modelo listo (CPU)";
+    badge.classList.toggle("warn", loaded && ready && !deviceReady && model.placement === "device");
   }
   if (!el) return;
   const statusText =
@@ -455,7 +461,7 @@ function renderModelStatus(model) {
   ];
   if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
   else if (loaded && model.placement === "device" && model.backend === "yolo") {
-    rows.push(["Blob Myriad", "No generado"]);
+    rows.push(["Blob Myriad", model.blob_path ? "Listo" : "Pendiente (solo CPU por ahora)"]);
   }
   el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
   if (model.backend) setCamModelBackend(model.backend);
@@ -585,11 +591,7 @@ async function updateMonitoringModelFields() {
   try {
     const s = camStatusCache || (await api("/api/v1/camera/status", { silent: true }));
     camStatusCache = s;
-    loaded = Boolean(s.model?.loaded && s.model?.inference_ready !== false && (
-      s.model?.inference_ready === true ||
-      s.model?.backend === "mediapipe" ||
-      Boolean(s.model?.blob_path)
-    ));
+    loaded = Boolean(s.model?.loaded && isModelDeviceReady(s.model));
     backend = s.model?.backend;
     monitoringCameraModelLoaded = loaded;
   } catch {
@@ -1338,15 +1340,20 @@ $("cam-model-action").addEventListener("click", async () => {
     return;
   }
   const backend = getCamModelBackend();
+  const placement = backend === "yolo" ? "device" : "host";
   setModelLoading(true);
   try {
     const r = await api("/api/v1/camera/model/load", {
       method: "POST",
-      body: JSON.stringify({ backend, placement: "device" }),
-      successMessage: isModelInferenceReady(r) ? "Modelo cargado" : "Modelo preparado (revisa el estado)",
+      body: JSON.stringify({ backend, placement }),
+      successMessage: "Modelo procesado",
     });
     renderModelStatus(r);
-    if (!isModelInferenceReady(r)) {
+    if (r.loaded && !isModelDeviceReady(r) && r.placement === "device" && backend === "yolo") {
+      showToast(r.message || "YOLO en CPU; blob Myriad pendiente", "warn");
+    } else if (r.loaded && isModelInferenceReady(r)) {
+      showToast("Modelo listo — puedes pulsar Comprobar", "ok");
+    } else if (!isModelInferenceReady(r)) {
       showToast(r.message || "Modelo preparado pero incompleto para OAK", "warn");
     }
     await loadCameraStatus({ silent: true });

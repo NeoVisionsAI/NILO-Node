@@ -26,16 +26,43 @@ class ModelRuntimeState:
     last_error: str | None = None
 
     def inference_ready(self) -> bool:
-        """True when pose-test / monitoring can run with current artifacts."""
+        """True when host pose-test / CPU inference can run."""
+        return self.loaded
+
+    def device_blob_ready(self) -> bool:
+        """True when Myriad blob is ready for on-camera YOLO inference."""
         if not self.loaded:
             return False
-        if self.placement == "host":
+        if self.placement != "device":
             return True
         if self.backend == "mediapipe":
             return True
         if self.backend == "yolo":
             return bool(self.blob_path)
         return False
+
+    def refresh_message(self) -> None:
+        if not self.loaded:
+            return
+        backend = self.backend or "?"
+        if backend == "mediapipe":
+            self.message = (
+                "MediaPipe listo — landmarks en CPU del nodo con frames de la OAK"
+                if self.placement == "device"
+                else "MediaPipe listo en el nodo (CPU)"
+            )
+            return
+        if backend == "yolo" and self.placement == "device" and not self.blob_path:
+            self.message = (
+                "YOLO listo en CPU del nodo; blob Myriad pendiente para inferencia en OAK "
+                "(requiere blobconverter)"
+            )
+        elif backend == "yolo" and self.placement == "device":
+            self.message = "YOLO cargado para inferencia en cámara OAK (blob listo)"
+        elif backend == "yolo":
+            self.message = "YOLO listo en el nodo (CPU/Ultralytics)"
+        else:
+            self.message = f"Modelo {backend} listo"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +75,7 @@ class ModelRuntimeState:
             "message": self.message,
             "last_error": self.last_error,
             "inference_ready": self.inference_ready(),
+            "device_blob_ready": self.device_blob_ready(),
         }
 
 
@@ -80,6 +108,9 @@ class CameraModelRuntime:
                 message=data.get("message"),
                 last_error=data.get("last_error"),
             )
+            if self._state.loaded:
+                self._state.refresh_message()
+                self._persist()
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("Could not load model runtime state: %s", exc)
 
@@ -113,22 +144,7 @@ class CameraModelRuntime:
         self._state.manifest_path = str(manifest.get("manifest_dir", ""))
         self._state.openvino_xml = manifest.get("openvino_xml")
         self._state.blob_path = manifest.get("blob")
-        if backend == "mediapipe":
-            if placement == "device":
-                self._state.message = (
-                    "MediaPipe listo — landmarks en CPU del nodo con frames de la OAK"
-                )
-            else:
-                self._state.message = "MediaPipe listo en el nodo (CPU)"
-        elif placement == "device" and not self._state.blob_path:
-            self._state.message = (
-                "YOLO preparado en host; blob Myriad no generado — "
-                "instala blobconverter y vuelve a cargar, o usa MediaPipe"
-            )
-        elif placement == "device":
-            self._state.message = "YOLO cargado para inferencia en cámara OAK (blob listo)"
-        else:
-            self._state.message = f"Modelo {backend} listo en el nodo (CPU/OpenVINO host)"
+        self._state.refresh_message()
         self._persist()
         return self._state.to_dict()
 

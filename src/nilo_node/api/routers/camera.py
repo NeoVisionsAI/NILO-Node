@@ -114,10 +114,10 @@ def create_camera_router(
     async def camera_pose_test() -> dict[str, Any]:
         """Capture one frame and run pose inference (no live streaming)."""
         result = await camera.test_loaded_model()
-        if not result.get("frame_available", False):
+        if not result.get("model") and result.get("error"):
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(result.get("error") or "No hay frame disponible"),
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(result["error"]),
             )
         return result
 
@@ -127,11 +127,13 @@ def create_camera_router(
         loaded = bool(state.get("loaded"))
         placement = state.get("placement") or "host"
         inference_ready = bool(state.get("inference_ready"))
+        device_blob_ready = bool(state.get("device_blob_ready"))
         return {
             **state,
             "model_loaded": loaded,
             "inference_ready": inference_ready,
-            "loaded_on_device": loaded and placement == "device" and inference_ready,
+            "device_blob_ready": device_blob_ready,
+            "loaded_on_device": loaded and placement == "device" and device_blob_ready,
             "loaded_on_host": loaded and placement == "host",
         }
 

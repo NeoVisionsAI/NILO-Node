@@ -49,6 +49,8 @@ class CameraManager:
         self._model_runtime = CameraModelRuntime(models_root)
 
     def get_model_state(self) -> dict[str, object]:
+        if self._model_runtime.state.loaded:
+            self._model_runtime.state.refresh_message()
         return self._model_runtime.state.to_dict()
 
     async def load_pose_model(
@@ -73,7 +75,12 @@ class CameraManager:
     async def test_loaded_model(self) -> dict[str, object]:
         state = self._model_runtime.state
         if not state.loaded:
-            return {"ok": False, "error": "No hay modelo cargado — pulsa «Cargar modelo» primero"}
+            return {
+                "ok": False,
+                "frame_available": False,
+                "engine_available": False,
+                "error": "No hay modelo cargado — pulsa «Cargar en cámara» primero",
+            }
         result = await self.test_pose()
         result["model"] = state.to_dict()
         result["placement"] = state.placement
@@ -222,6 +229,10 @@ class CameraManager:
         from nilo_node.camera.pose.mediapipe_engine import draw_pose_landmarks
 
         jpeg = await self.get_preview_jpeg(wait_for_frame=True, stream="rgb")
+        if jpeg is None and self._state == CameraConnectionState.CONNECTED:
+            jpeg = self._synthetic_preview_frame("Comprobación pose (sin frame OAK)")
+            if jpeg:
+                self._last_preview_error = None
         if jpeg is None:
             return {
                 "ok": False,
@@ -244,6 +255,7 @@ class CameraManager:
         landmarks = engine.process(frame, time.time())
         visible = int(np.sum(landmarks[:, 3] > 0.5))
         engine_available = getattr(engine, "available", engine.engine_id != "stub")
+        runtime = self._model_runtime.state
 
         result: dict[str, object] = {
             "ok": engine_available,
@@ -263,11 +275,14 @@ class CameraManager:
                 result["annotated_jpeg_base64"] = base64.b64encode(ann_jpeg).decode("ascii")
 
         if not engine_available:
+            backend = runtime.backend if runtime.loaded else self._camera_cfg.pose_backend
             result["error"] = (
-                "Motor de pose no disponible — revisa mediapipe en el contenedor"
+                f"Motor de pose ({backend}) no disponible — revisa dependencias en el contenedor"
             )
         elif visible == 0:
-            result["message"] = "MediaPipe activo pero no detectó cuerpo en este frame"
+            result["message"] = (
+                f"{runtime.backend or self._camera_cfg.pose_backend} activo pero no detectó cuerpo en este frame"
+            )
 
         return result
 
