@@ -4,7 +4,7 @@ const TITLES = {
   dashboard: "Panel",
   wifi: "WiFi",
   camera: "Cámara",
-  bluetooth: "Bluetooth",
+  bluetooth: "Audio inalámbrico",
   mqtt: "MQTT",
 };
 
@@ -60,12 +60,13 @@ function showToast(msg, type = "ok") {
 function applyTheme(theme) {
   const next = theme === "dark" ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", next);
+  document.documentElement.style.colorScheme = next;
   localStorage.setItem(THEME_KEY, next);
-  const btn = $("theme-toggle");
-  if (btn) {
+  document.querySelectorAll(".theme-toggle").forEach((btn) => {
     btn.textContent = next === "dark" ? "☾" : "☀";
     btn.title = next === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro";
-  }
+    btn.setAttribute("aria-label", btn.title);
+  });
 }
 
 function initTheme() {
@@ -74,8 +75,9 @@ function initTheme() {
 
 function toggleTheme() {
   const current = document.documentElement.getAttribute("data-theme") || "light";
-  applyTheme(current === "dark" ? "light" : "dark");
-  showToast(current === "dark" ? "Tema claro activado" : "Tema oscuro activado", "ok");
+  const goingDark = current !== "dark";
+  applyTheme(goingDark ? "dark" : "light");
+  showToast(goingDark ? "Tema oscuro activado" : "Tema claro activado", "ok");
 }
 
 async function apiRequest(path, options = {}) {
@@ -153,6 +155,9 @@ function showTab(name) {
   $("page-title").textContent = TITLES[name] || name;
   if (name === "camera") {
     loadCameraStatus({ silent: true }).catch(() => {});
+  }
+  if (name === "bluetooth") {
+    loadBluetoothTab({ silent: true }).catch(() => {});
   }
 }
 
@@ -236,7 +241,7 @@ async function loadDashboard(options = {}) {
   $("dashboard-cards").innerHTML = [
     statCard("Cámara", camLabel, camCls),
     statCard("WiFi AP", wifiActive ? d.wifi.ssid : "Parado", wifiActive ? "stat-ok" : "stat-warn"),
-    statCard("Bluetooth", `${d.bluetooth.connected_count} mic(s)`, ""),
+    statCard("Audio BT", `${d.bluetooth.connected_count} conectado(s)`, ""),
     statCard("MQTT", d.mqtt?.connected ? "Conectado" : "Off", d.mqtt?.connected ? "stat-ok" : "stat-off"),
   ].join("");
 
@@ -274,6 +279,34 @@ function setCamBanner(message, type = "ok") {
   el.classList.remove("hidden");
 }
 
+function updateCamConnectionIcon(s) {
+  const icon = $("cam-connection-icon");
+  const label = $("cam-connection-label");
+  const hint = $("cam-connection-hint");
+  if (!icon || !label || !hint) return;
+
+  const state = s.connection_state || "disconnected";
+  icon.className = `cam-icon ${state}`;
+  label.textContent = CAM_STATE_LABELS[state] || state;
+
+  if (state === "connected") {
+    icon.textContent = "●";
+    hint.textContent =
+      s.pipeline_mode === "mock"
+        ? "Modo simulación — usa Capturar frame bajo demanda"
+        : `Conectada (${s.connected_device_id || "OAK"}) — sin streaming en vivo`;
+  } else if (state === "connecting") {
+    icon.textContent = "◌";
+    hint.textContent = "Estableciendo enlace con la cámara…";
+  } else if (state === "error") {
+    icon.textContent = "✕";
+    hint.textContent = s.last_error || "Revisa PoE/USB e IP de la cámara";
+  } else {
+    icon.textContent = "○";
+    hint.textContent = "Detectar → Conectar → Capturar frame";
+  }
+}
+
 function renderCameraStatusSummary(s) {
   const state = CAM_STATE_LABELS[s.connection_state] || s.connection_state;
   const rows = [
@@ -284,16 +317,17 @@ function renderCameraStatusSummary(s) {
     ["Cámaras encontradas", String(s.available_devices?.length ?? 0)],
   ];
   if (s.last_error) rows.push(["Último error", s.last_error]);
-  if (s.last_preview_error) rows.push(["Preview", s.last_preview_error]);
   $("cam-status-summary").innerHTML = rows
     .map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`)
     .join("");
 
+  updateCamConnectionIcon(s);
+
   if (s.connection_state === "connected") {
     setCamBanner(
       s.pipeline_mode === "mock"
-        ? "Conectado en modo simulación (mock) — no hay cámara OAK real"
-        : `Cámara conectada correctamente (${s.connected_device_id || "OAK"})`,
+        ? "Conectado en modo simulación (mock) — captura bajo demanda"
+        : `Cámara conectada (${s.connected_device_id || "OAK"}) — captura bajo demanda`,
       s.pipeline_mode === "mock" ? "warn" : "ok",
     );
   } else if (s.connection_state === "error") {
@@ -301,23 +335,30 @@ function renderCameraStatusSummary(s) {
   } else if (s.connection_state === "connecting") {
     setCamBanner("Conectando con la cámara…", "warn");
   } else {
-    setCamBanner("Cámara desconectada — pulsa Detectar y luego Conectar", "warn");
+    setCamBanner("", "warn");
+    $("cam-banner").classList.add("hidden");
   }
 }
 
-async function showPreviewFromResponse(res, { notify = false } = {}) {
+async function showPreviewFromBlob(blob, { notify = false, message = "Frame capturado" } = {}) {
+  const img = $("cam-preview");
+  const ph = $("cam-preview-placeholder");
+  if (img.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
+  const url = URL.createObjectURL(blob);
+  img.dataset.objectUrl = url;
+  img.src = url;
+  img.classList.remove("hidden");
+  ph.classList.add("hidden");
+  if (notify) showToast(message, "ok");
+  return true;
+}
+
+async function showPreviewFromResponse(res, { notify = false, message = "Frame capturado" } = {}) {
   const img = $("cam-preview");
   const ph = $("cam-preview-placeholder");
   if (res.ok) {
     const blob = await res.blob();
-    if (img.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
-    const url = URL.createObjectURL(blob);
-    img.dataset.objectUrl = url;
-    img.src = url;
-    img.classList.remove("hidden");
-    ph.classList.add("hidden");
-    if (notify) showToast("Frame capturado", "ok");
-    return true;
+    return showPreviewFromBlob(blob, { notify, message });
   }
   img.classList.add("hidden");
   ph.classList.remove("hidden");
@@ -328,15 +369,18 @@ async function showPreviewFromResponse(res, { notify = false } = {}) {
   return false;
 }
 
-async function refreshCameraPreview({ silent = true, notify = false } = {}) {
-  try {
-    const res = await apiRequest("/api/v1/camera/preview", { silent: true, jsonBody: false });
-    await showPreviewFromResponse(res, { notify });
-  } catch (err) {
-    $("cam-preview").classList.add("hidden");
-    $("cam-preview-placeholder").classList.remove("hidden");
-    $("cam-preview-placeholder").textContent = err.message;
-    if (!silent || notify) showToast(err.message, "error");
+function clearCameraPreview(message = "Sin captura — conecta la cámara y pulsa «Capturar frame»") {
+  const img = $("cam-preview");
+  const ph = $("cam-preview-placeholder");
+  if (img?.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
+  if (img) {
+    img.classList.add("hidden");
+    img.removeAttribute("src");
+    delete img.dataset.objectUrl;
+  }
+  if (ph) {
+    ph.classList.remove("hidden");
+    ph.textContent = message;
   }
 }
 
@@ -389,7 +433,8 @@ $("logout-btn-top").addEventListener("click", () => {
   showToast("Sesión cerrada", "ok");
   logout();
 });
-$("theme-toggle").addEventListener("click", toggleTheme);
+$("theme-toggle")?.addEventListener("click", toggleTheme);
+$("theme-toggle-login")?.addEventListener("click", toggleTheme);
 
 $("dash-refresh").addEventListener("click", () => {
   loadDashboard().catch(() => logout());
@@ -414,7 +459,7 @@ $("camera-form").addEventListener("submit", async (e) => {
 
 $("bt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  await saveSettings("bluetooth", formToPatch(e.target), "Bluetooth");
+  await saveSettings("bluetooth", formToPatch(e.target), "Audio inalámbrico");
 });
 
 $("mqtt-form").addEventListener("submit", async (e) => {
@@ -461,7 +506,6 @@ $("cam-connect").addEventListener("click", async () => {
         s.pipeline_mode === "mock" ? "Conectado (modo mock)" : "Cámara conectada correctamente",
         "ok",
       );
-      await refreshCameraPreview({ silent: true });
     }
     await loadCameraStatus({ silent: true });
   } catch (err) {
@@ -491,31 +535,293 @@ $("cam-disconnect").addEventListener("click", async () => {
     method: "POST",
     successMessage: "Cámara desconectada",
   });
-  $("cam-preview").classList.add("hidden");
-  $("cam-preview-placeholder").classList.remove("hidden");
-  $("cam-preview-placeholder").textContent = "Desconectada";
+  clearCameraPreview("Desconectada");
   await loadCameraStatus({ silent: true });
 });
 
-$("bt-discover").addEventListener("click", async () => {
-  const r = await api("/api/v1/bluetooth/discover", { successMessage: "Escaneo Bluetooth completado" });
-  $("bt-list").innerHTML =
-    r.devices
-      .map(
-        (d) =>
-          `<li><div><div class="name">${d.name || "Dispositivo"}</div><div class="mac">${d.mac_address}</div></div><button class="btn secondary" data-mac="${d.mac_address}">Conectar</button></li>`,
-      )
-      .join("") || "<li>No se encontraron dispositivos</li>";
-  $("bt-list").querySelectorAll("button[data-mac]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      await api("/api/v1/bluetooth/connect", {
-        method: "POST",
-        body: JSON.stringify({ mac_address: btn.dataset.mac }),
-        successMessage: "Micrófono conectado",
+$("cam-pose-test").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/v1/camera/pose-test", {
+      method: "POST",
+      body: "{}",
+    });
+    if (r.annotated_jpeg_base64) {
+      const raw = atob(r.annotated_jpeg_base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+      await showPreviewFromBlob(new Blob([bytes], { type: "image/jpeg" }), {
+        notify: false,
+        message: "Pose detectada",
       });
-      await loadDashboard({ silent: true });
+    }
+    if (r.engine_available) {
+      const n = r.landmarks_detected ?? 0;
+      const msg = r.pose_detected
+        ? `MediaPipe OK — ${n} landmarks detectados`
+        : r.message || "MediaPipe OK — sin cuerpo visible en el frame";
+      showToast(msg, r.pose_detected ? "ok" : "warn");
+      setCamBanner(msg, r.pose_detected ? "ok" : "warn");
+    }
+    await loadCameraStatus({ silent: true });
+  } catch (err) {
+    setCamBanner(`MediaPipe: ${err.message}`, "err");
+  }
+});
+
+const BT_RECORDING_MODE_LABELS = {
+  continuous: "Permanente",
+  interval: "Intervalos",
+  on_demand: "Bajo demanda",
+};
+
+let btDiscoveredDevices = [];
+let btSelectedDiscoverMac = null;
+let btSelectedConnectedMac = null;
+let btStatusCache = null;
+
+function btEscape(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+function updateBtDetailVisibility(mode) {
+  const intervalWrap = $("bt-interval-wrap");
+  const demandWrap = $("bt-demand-wrap");
+  if (intervalWrap) intervalWrap.classList.toggle("hidden", mode !== "interval");
+  if (demandWrap) demandWrap.classList.toggle("hidden", mode !== "on_demand");
+}
+
+function renderBtDiscoveredList() {
+  const list = $("bt-discovered-list");
+  const actions = $("bt-discovered-actions");
+  const connectedMacs = new Set(
+    (btStatusCache?.mics || []).filter((m) => m.connected).map((m) => m.mac_address),
+  );
+  const items = btDiscoveredDevices.filter((d) => !connectedMacs.has(d.mac_address));
+  if (!items.length) {
+    list.innerHTML = "<li class='empty-item'>Ningún dispositivo nuevo — escanea de nuevo</li>";
+    actions.classList.add("hidden");
+    btSelectedDiscoverMac = null;
+    return;
+  }
+  list.innerHTML = items
+    .map((d) => {
+      const label = d.label || d.display_name || d.name || d.mac_address;
+      const selected = d.mac_address === btSelectedDiscoverMac ? " selected" : "";
+      const meta = [
+        d.mac_address,
+        d.rssi != null ? `${d.rssi} dBm` : null,
+        d.paired ? "emparejado" : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<li class="selectable${selected}" data-mac="${btEscape(d.mac_address)}">
+        <div><div class="name">${btEscape(label)}</div><div class="mac">${btEscape(meta)}</div></div>
+      </li>`;
+    })
+    .join("");
+  list.querySelectorAll("li.selectable").forEach((li) => {
+    li.addEventListener("click", () => {
+      btSelectedDiscoverMac = li.dataset.mac;
+      renderBtDiscoveredList();
+      $("bt-discovered-actions").classList.remove("hidden");
     });
   });
+  actions.classList.toggle("hidden", !btSelectedDiscoverMac);
+}
+
+function renderBtConnectedList() {
+  const list = $("bt-connected-list");
+  const connected = (btStatusCache?.mics || []).filter((m) => m.connected);
+  if (!connected.length) {
+    list.innerHTML = "<li class='empty-item'>No hay micrófonos conectados</li>";
+    if (!btSelectedConnectedMac) $("bt-detail-card").classList.add("hidden");
+    return;
+  }
+  list.innerHTML = connected
+    .map((m) => {
+      const selected = m.mac_address === btSelectedConnectedMac ? " selected" : "";
+      const rec = m.record_enabled
+        ? m.recording_mode === "on_demand" && !m.recording_active
+          ? "activada (en espera)"
+          : "grabando"
+        : "sin grabación";
+      return `<li class="selectable${selected}" data-mac="${btEscape(m.mac_address)}">
+        <div>
+          <div class="name">${btEscape(m.label || m.mac_address)}</div>
+          <div class="mac">${btEscape(m.mac_address)} · ${btEscape(BT_RECORDING_MODE_LABELS[m.recording_mode] || m.recording_mode)} · ${btEscape(rec)}</div>
+        </div>
+      </li>`;
+    })
+    .join("");
+  list.querySelectorAll("li.selectable").forEach((li) => {
+    li.addEventListener("click", () => {
+      btSelectedConnectedMac = li.dataset.mac;
+      renderBtConnectedList();
+      showBtMicDetail(btSelectedConnectedMac);
+    });
+  });
+}
+
+function showBtMicDetail(mac) {
+  const mic = (btStatusCache?.mics || []).find((m) => m.mac_address === mac);
+  if (!mic) {
+    $("bt-detail-card").classList.add("hidden");
+    return;
+  }
+  $("bt-detail-card").classList.remove("hidden");
+  $("bt-detail-title").textContent = mic.label || mic.mac_address;
+  fillForm($("bt-mic-form"), {
+    display_name: mic.display_name || "",
+    recording_mode: mic.recording_mode || "on_demand",
+    recording_interval_sec: mic.recording_interval_sec || 60,
+    record_enabled: mic.record_enabled,
+    recording_active: mic.recording_active,
+  });
+  updateBtDetailVisibility(mic.recording_mode || "on_demand");
+}
+
+async function loadBluetoothTab(options = {}) {
+  btStatusCache = await api("/api/v1/bluetooth/status", options);
+  renderBtConnectedList();
+  if (btSelectedConnectedMac) {
+    const stillThere = (btStatusCache.mics || []).some(
+      (m) => m.mac_address === btSelectedConnectedMac && m.connected,
+    );
+    if (stillThere) showBtMicDetail(btSelectedConnectedMac);
+    else {
+      btSelectedConnectedMac = null;
+      $("bt-detail-card").classList.add("hidden");
+    }
+  }
+  renderBtDiscoveredList();
+}
+
+$("bt-discover").addEventListener("click", async () => {
+  const statusEl = $("bt-scan-status");
+  statusEl.classList.remove("hidden");
+  statusEl.textContent = "Escaneando… permanece en esta pantalla unos segundos.";
+  btSelectedDiscoverMac = null;
+  try {
+    const r = await api("/api/v1/bluetooth/discover", {
+      successMessage: "Escaneo completado",
+    });
+    btDiscoveredDevices = r.devices || [];
+    statusEl.textContent = r.mock
+      ? `Modo simulación — ${btDiscoveredDevices.length} dispositivo(s) de prueba`
+      : `${btDiscoveredDevices.length} dispositivo(s) detectado(s)`;
+    await loadBluetoothTab({ silent: true });
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+});
+
+$("bt-connect-selected").addEventListener("click", async () => {
+  if (!btSelectedDiscoverMac) return;
+  const device = btDiscoveredDevices.find((d) => d.mac_address === btSelectedDiscoverMac);
+  try {
+    await api("/api/v1/bluetooth/connect", {
+      method: "POST",
+      body: JSON.stringify({
+        mac_address: btSelectedDiscoverMac,
+        device_name: device?.name || device?.label || null,
+      }),
+      successMessage: "Micrófono conectado",
+    });
+    btSelectedDiscoverMac = null;
+    await loadBluetoothTab({ silent: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+});
+
+$("bt-mic-form").querySelector('[name="recording_mode"]').addEventListener("change", (e) => {
+  updateBtDetailVisibility(e.target.value);
+});
+
+$("bt-save-mic").addEventListener("click", async () => {
+  if (!btSelectedConnectedMac) return;
+  const patch = formToPatch($("bt-mic-form"));
+  patch.record_enabled = $("bt-mic-form").elements.record_enabled.checked;
+  patch.recording_active = $("bt-mic-form").elements.recording_active.checked;
+  try {
+    await api(`/api/v1/bluetooth/mics/${encodeURIComponent(btSelectedConnectedMac)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+      successMessage: "Micrófono actualizado",
+    });
+    await loadBluetoothTab({ silent: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+});
+
+$("bt-disconnect-selected").addEventListener("click", async () => {
+  if (!btSelectedConnectedMac) return;
+  try {
+    await api("/api/v1/bluetooth/disconnect", {
+      method: "POST",
+      body: JSON.stringify({ mac_address: btSelectedConnectedMac }),
+      successMessage: "Desconectado",
+    });
+    btSelectedConnectedMac = null;
+    $("bt-detail-card").classList.add("hidden");
+    await loadBluetoothTab({ silent: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+});
+
+$("bt-unpair-selected").addEventListener("click", async () => {
+  if (!btSelectedConnectedMac) return;
+  if (!window.confirm("¿Desvincular este micrófono? Tendrás que emparejarlo de nuevo.")) return;
+  const mac = btSelectedConnectedMac;
+  try {
+    await api("/api/v1/bluetooth/unpair", {
+      method: "POST",
+      body: JSON.stringify({ mac_address: mac }),
+      successMessage: "Dispositivo desvinculado",
+    });
+    btSelectedConnectedMac = null;
+    btDiscoveredDevices = btDiscoveredDevices.filter((d) => d.mac_address !== mac);
+    $("bt-detail-card").classList.add("hidden");
+    $("bt-test-player-wrap").classList.add("hidden");
+    await loadBluetoothTab({ silent: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+});
+
+$("bt-test-record").addEventListener("click", async () => {
+  if (!btSelectedConnectedMac) return;
+  const btn = $("bt-test-record");
+  btn.disabled = true;
+  btn.textContent = "Grabando… (10 s)";
+  try {
+    const r = await api(
+      `/api/v1/bluetooth/mics/${encodeURIComponent(btSelectedConnectedMac)}/test-recording`,
+      {
+        method: "POST",
+        body: JSON.stringify({ duration_sec: 10 }),
+        successMessage: "Prueba de grabación completada",
+      },
+    );
+    const res = await apiRequest(r.playback_url, { silent: true, jsonBody: false });
+    const blob = await res.blob();
+    const player = $("bt-test-player");
+    if (player.dataset.objectUrl) URL.revokeObjectURL(player.dataset.objectUrl);
+    const url = URL.createObjectURL(blob);
+    player.dataset.objectUrl = url;
+    player.src = url;
+    $("bt-test-player-wrap").classList.remove("hidden");
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Probar grabación (10 s)";
+  }
 });
 
 if (localStorage.getItem(TOKEN_KEY)) {
@@ -523,12 +829,5 @@ if (localStorage.getItem(TOKEN_KEY)) {
   $("app").classList.remove("hidden");
   loadDashboard({ silent: true }).catch(logout);
 }
-
-setInterval(() => {
-  if (!localStorage.getItem(TOKEN_KEY)) return;
-  if (!$("tab-camera").classList.contains("hidden")) {
-    refreshCameraPreview({ silent: true });
-  }
-}, 2500);
 
 initTheme();

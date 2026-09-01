@@ -94,6 +94,22 @@ def create_camera_router(
             )
         return Response(content=jpeg, media_type="image/jpeg")
 
+    @router.post("/pose-test", dependencies=[auth])
+    async def camera_pose_test() -> dict[str, Any]:
+        """Capture one frame and run pose inference (no live streaming)."""
+        result = await camera.test_pose()
+        if not result.get("frame_available", True):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(result.get("error") or "No hay frame disponible"),
+            )
+        if not result.get("engine_available"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(result.get("error") or "Motor de pose no disponible"),
+            )
+        return result
+
     @router.patch("/config", dependencies=[auth])
     async def update_camera_config(body: CameraConfigUpdate) -> dict[str, Any]:
         updates = body.model_dump(exclude_none=True)

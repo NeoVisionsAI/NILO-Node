@@ -77,7 +77,7 @@ def _parse_devices_output(output: str) -> list[BluetoothDeviceInfo]:
             )
             current_mac = mac
             continue
-        if current_mac and (rssi_match := _RSSILINE.search(line)):
+        if current_mac and (rssi_match := _RSSI_LINE.search(line)):
             devices[current_mac].rssi = int(rssi_match.group("rssi"))
     return list(devices.values())
 
@@ -88,17 +88,21 @@ async def list_known_devices() -> list[BluetoothDeviceInfo]:
 
 
 async def scan_devices(timeout_sec: int) -> list[BluetoothDeviceInfo]:
+    await power_on_adapter()
     await _run_bluetoothctl("scan", "on", timeout=2.0)
     try:
         await asyncio.sleep(timeout_sec)
     finally:
         await _run_bluetoothctl("scan", "off", timeout=5.0)
-    devices = await list_known_devices()
-    paired = {d.mac_address for d in await list_devices_by_filter("Paired")}
-    connected = {d.mac_address for d in await list_devices_by_filter("Connected")}
+    scanned = await list_known_devices()
+    paired = await list_devices_by_filter("Paired")
+    connected = await list_devices_by_filter("Connected")
+    devices = merge_device_lists(scanned, paired, connected)
+    paired_macs = {d.mac_address for d in paired}
+    connected_macs = {d.mac_address for d in connected}
     for device in devices:
-        device.paired = device.mac_address in paired
-        device.connected = device.mac_address in connected
+        device.paired = device.paired or device.mac_address in paired_macs
+        device.connected = device.connected or device.mac_address in connected_macs
     return devices
 
 
@@ -111,7 +115,27 @@ async def connect_device(mac_address: str) -> None:
     mac = normalize_mac(mac_address)
     output = await _run_bluetoothctl("connect", mac, timeout=20.0)
     if "Failed to connect" in output or "not available" in output.lower():
+        await _run_bluetoothctl("pair", mac, timeout=30.0)
+        await _run_bluetoothctl("trust", mac, timeout=10.0)
+        output = await _run_bluetoothctl("connect", mac, timeout=20.0)
+    if "Failed to connect" in output or "not available" in output.lower():
         raise RuntimeError(output.strip() or f"Failed to connect to {mac}")
+
+
+async def remove_device(mac_address: str) -> None:
+    mac = normalize_mac(mac_address)
+    try:
+        await _run_bluetoothctl("disconnect", mac, timeout=10.0)
+    except RuntimeError:
+        pass
+    output = await _run_bluetoothctl("remove", mac, timeout=15.0)
+    if "Failed to remove" in output and "not available" not in output.lower():
+        raise RuntimeError(output.strip() or f"Failed to remove {mac}")
+
+
+async def sync_connected_macs() -> set[str]:
+    connected = await list_devices_by_filter("Connected")
+    return {device.mac_address for device in connected}
 
 
 async def disconnect_device(mac_address: str) -> None:

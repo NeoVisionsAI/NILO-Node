@@ -143,7 +143,7 @@ class BluetoothConfig(BaseModel):
     sample_rate: int = 16000
     channels: int = 1
     format: Literal["flac"] = "flac"
-    default_record_on_connect: bool = True
+    default_record_on_connect: bool = False
 
 
 class WifiConfig(BaseModel):

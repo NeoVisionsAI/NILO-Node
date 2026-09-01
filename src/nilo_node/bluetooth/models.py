@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class BluetoothAdapterState(str, Enum):
@@ -14,6 +14,19 @@ class BluetoothAdapterState(str, Enum):
     RUNNING = "running"
     MOCK = "mock"
     ERROR = "error"
+
+
+class RecordingMode(str, Enum):
+    CONTINUOUS = "continuous"
+    INTERVAL = "interval"
+    ON_DEMAND = "on_demand"
+
+
+RECORDING_MODE_LABELS = {
+    RecordingMode.CONTINUOUS: "Permanente (mientras esté activada)",
+    RecordingMode.INTERVAL: "Por intervalos",
+    RecordingMode.ON_DEMAND: "Bajo demanda",
+}
 
 
 class BluetoothDeviceInfo(BaseModel):
@@ -28,11 +41,20 @@ class BluetoothDeviceInfo(BaseModel):
 class BluetoothMicRecord(BaseModel):
     mac_address: str
     device_name: str | None = None
+    display_name: str | None = None
     connected: bool = False
-    record_enabled: bool = True
+    record_enabled: bool = False
+    recording_mode: RecordingMode = RecordingMode.ON_DEMAND
+    recording_interval_sec: int = 60
+    recording_active: bool = False
     paired: bool = False
     registered_at: datetime
     last_seen_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def label(self) -> str:
+        return self.display_name or self.device_name or self.mac_address
 
 
 class BluetoothStatus(BaseModel):

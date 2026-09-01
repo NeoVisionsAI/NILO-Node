@@ -1,13 +1,20 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
   <title>NILO-Node · Configuración</title>
+  <script>
+    (function () {
+      var theme = localStorage.getItem("nilo_theme");
+      document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -22,6 +29,10 @@
         </div>
       </div>
       <p class="hint">Conéctate al WiFi del nodo e inicia sesión.</p>
+      <div class="login-theme-row">
+        <button id="theme-toggle-login" class="btn secondary theme-toggle" type="button" title="Cambiar tema">☀</button>
+        <span class="hint inline-hint">Tema claro / oscuro</span>
+      </div>
       <form id="login-form">
         <label>
           <span>Usuario</span>
@@ -47,7 +58,7 @@
         <button data-tab="dashboard" class="nav-item active"><span class="ico">◉</span> Panel</button>
         <button data-tab="wifi" class="nav-item"><span class="ico">⌂</span> WiFi</button>
         <button data-tab="camera" class="nav-item"><span class="ico">▣</span> Cámara</button>
-        <button data-tab="bluetooth" class="nav-item"><span class="ico">♫</span> Bluetooth</button>
+        <button data-tab="bluetooth" class="nav-item"><span class="ico">♫</span> Audio BT</button>
         <button data-tab="mqtt" class="nav-item"><span class="ico">⇄</span> MQTT</button>
       </nav>
       <div class="sidebar-foot">
@@ -99,16 +110,25 @@
       <section id="tab-camera" class="page hidden">
         <div class="grid two">
           <div class="card">
-            <h3>Vista en vivo</h3>
+            <h3>Cámara OAK</h3>
             <div id="cam-banner" class="status-banner hidden"></div>
+            <div class="cam-status-panel">
+              <div id="cam-connection-icon" class="cam-icon disconnected" aria-hidden="true">○</div>
+              <div>
+                <div id="cam-connection-label" class="cam-icon-label">Desconectada</div>
+                <div id="cam-connection-hint" class="cam-icon-hint">Detectar → Conectar → Capturar frame</div>
+              </div>
+            </div>
+            <h4 class="cam-subtitle">Última captura</h4>
             <div class="preview-wrap">
-              <img id="cam-preview" alt="Vista previa" class="hidden" />
-              <div id="cam-preview-placeholder" class="preview-ph">Sin señal — pulsa Detectar y Conectar</div>
+              <img id="cam-preview" alt="Última captura" class="hidden" />
+              <div id="cam-preview-placeholder" class="preview-ph">Sin captura — conecta la cámara y pulsa «Capturar frame»</div>
             </div>
             <div class="row">
               <button id="cam-discover" class="btn secondary">Detectar</button>
               <button id="cam-connect" class="btn primary">Conectar</button>
               <button id="cam-snapshot" class="btn secondary">Capturar frame</button>
+              <button id="cam-pose-test" class="btn secondary">Probar MediaPipe</button>
               <button id="cam-disconnect" class="btn ghost">Desconectar</button>
             </div>
           </div>
@@ -149,18 +169,60 @@
       <section id="tab-bluetooth" class="page hidden">
         <div class="grid two">
           <div class="card">
-            <h3>Dispositivos</h3>
+            <h3>Dispositivos detectados</h3>
+            <p class="hint">Escanea y selecciona un micrófono para conectarlo.</p>
             <button id="bt-discover" class="btn primary">Escanear</button>
-            <ul id="bt-list" class="device-list"></ul>
+            <p id="bt-scan-status" class="hint hidden"></p>
+            <ul id="bt-discovered-list" class="device-list"></ul>
+            <div id="bt-discovered-actions" class="row hidden">
+              <button id="bt-connect-selected" class="btn primary">Conectar</button>
+            </div>
           </div>
           <div class="card">
-            <h3>Preferencias</h3>
-            <form id="bt-form" class="form">
-              <label class="check"><input name="default_record_on_connect" type="checkbox" /> Grabar al conectar</label>
-              <label>Timeout escaneo (s) <input name="scan_timeout_sec" type="number" min="3" max="120" /></label>
-              <button type="submit" class="btn primary">Guardar</button>
-            </form>
+            <h3>Conectados</h3>
+            <p class="hint">Conectado ≠ grabando. Activa la grabación en el panel de detalle.</p>
+            <ul id="bt-connected-list" class="device-list"></ul>
           </div>
+        </div>
+        <div id="bt-detail-card" class="card hidden">
+          <h3 id="bt-detail-title">Micrófono</h3>
+          <form id="bt-mic-form" class="form grid two">
+            <label>Nombre personalizado
+              <input name="display_name" type="text" placeholder="Ej. Mic paciente A" />
+            </label>
+            <label>Modo de grabación
+              <select name="recording_mode">
+                <option value="continuous">Permanente (mientras esté activada)</option>
+                <option value="interval">Por intervalos</option>
+                <option value="on_demand">Bajo demanda</option>
+              </select>
+            </label>
+            <label id="bt-interval-wrap">Intervalo (s)
+              <input name="recording_interval_sec" type="number" min="5" max="3600" value="60" />
+            </label>
+            <label class="check"><input name="record_enabled" type="checkbox" /> Grabación activada</label>
+            <label id="bt-demand-wrap" class="check hidden">
+              <input name="recording_active" type="checkbox" /> Capturando ahora (bajo demanda)
+            </label>
+          </form>
+          <div class="row">
+            <button id="bt-save-mic" class="btn primary">Guardar</button>
+            <button id="bt-disconnect-selected" class="btn secondary">Desconectar</button>
+            <button id="bt-unpair-selected" class="btn ghost">Desvincular</button>
+            <button id="bt-test-record" class="btn secondary">Probar grabación (10 s)</button>
+          </div>
+          <div id="bt-test-player-wrap" class="hidden">
+            <p class="hint">Última prueba de grabación</p>
+            <audio id="bt-test-player" controls></audio>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Preferencias globales</h3>
+          <form id="bt-form" class="form">
+            <label class="check"><input name="default_record_on_connect" type="checkbox" /> Activar grabación al conectar (no recomendado)</label>
+            <label>Timeout escaneo (s) <input name="scan_timeout_sec" type="number" min="3" max="120" /></label>
+            <button type="submit" class="btn primary">Guardar</button>
+          </form>
         </div>
       </section>
 
@@ -188,6 +250,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

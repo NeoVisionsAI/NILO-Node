@@ -141,7 +141,15 @@ def test_bluetooth_discover_connect_disconnect(tmp_path: Path) -> None:
         )
         assert connect.status_code == 200
         assert connect.json()["connected"] is True
-        assert connect.json()["record_enabled"] is True
+        assert connect.json()["record_enabled"] is False
+
+        enable_rec = client.patch(
+            f"/api/v1/bluetooth/mics/{mac}/recording",
+            headers=headers,
+            json={"record_enabled": True},
+        )
+        assert enable_rec.status_code == 200
+        assert enable_rec.json()["record_enabled"] is True
 
         status = client.get("/api/v1/bluetooth/status", headers=headers)
         assert status.status_code == 200
@@ -162,6 +170,54 @@ def test_bluetooth_discover_connect_disconnect(tmp_path: Path) -> None:
         )
         assert disconnect.status_code == 200
         assert disconnect.json()["connected"] is False
+
+
+def test_bluetooth_mic_settings_and_test_recording(tmp_path: Path) -> None:
+    with _test_client(tmp_path) as (client, _):
+        headers = {"Authorization": "Bearer test-token"}
+        mac = "AA:BB:CC:DD:EE:01"
+        client.post(
+            "/api/v1/bluetooth/connect",
+            headers=headers,
+            json={"mac_address": mac, "device_name": "Mic Lab"},
+        )
+        updated = client.patch(
+            f"/api/v1/bluetooth/mics/{mac}",
+            headers=headers,
+            json={
+                "display_name": "Mic principal",
+                "recording_mode": "on_demand",
+                "record_enabled": True,
+                "recording_active": False,
+            },
+        )
+        assert updated.status_code == 200
+        body = updated.json()
+        assert body["display_name"] == "Mic principal"
+        assert body["label"] == "Mic principal"
+        assert body["recording_mode"] == "on_demand"
+        assert body["record_enabled"] is True
+        assert body["recording_active"] is False
+
+        test_rec = client.post(
+            f"/api/v1/bluetooth/mics/{mac}/test-recording",
+            headers=headers,
+            json={"duration_sec": 1.0},
+        )
+        assert test_rec.status_code == 200
+        playback_url = test_rec.json()["playback_url"]
+        audio = client.get(playback_url, headers=headers)
+        assert audio.status_code == 200
+        assert audio.headers["content-type"].startswith("audio/")
+
+        unpair = client.post(
+            "/api/v1/bluetooth/unpair",
+            headers=headers,
+            json={"mac_address": mac},
+        )
+        assert unpair.status_code == 200
+        status = client.get("/api/v1/bluetooth/status", headers=headers)
+        assert status.json()["connected_count"] == 0
 
 
 def test_recording_toggle_requires_known_mic(tmp_path: Path) -> None:
@@ -194,7 +250,11 @@ async def test_audio_source_writes_tracks_for_recording_mics(tmp_path: Path) -> 
     await bluetooth.start()
 
     await bluetooth.connect("AA:BB:CC:DD:EE:01", "Mic 1")
-    bluetooth.set_recording("AA:BB:CC:DD:EE:01", True)
+    bluetooth.update_mic_settings(
+        "AA:BB:CC:DD:EE:01",
+        record_enabled=True,
+        recording_mode="continuous",
+    )
     await bluetooth.connect("AA:BB:CC:DD:EE:02", "Mic 2")
     bluetooth.set_recording("AA:BB:CC:DD:EE:02", False)
 

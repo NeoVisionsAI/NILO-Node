@@ -700,8 +700,9 @@ class StateRepository:
         *,
         device_name: str | None,
         connected: bool,
-        record_enabled: bool,
+        record_enabled: bool | None = None,
         paired: bool,
+        metadata_patch: dict[str, Any] | None = None,
     ) -> "BluetoothMicRecord":
         from nilo_node.bluetooth.models import normalize_mac
 
@@ -709,37 +710,114 @@ class StateRepository:
         now = _utc_now_iso()
         conn = self._db.connect()
         existing = conn.execute(
-            "SELECT registered_at FROM bluetooth_mics WHERE mac_address = ?",
+            "SELECT * FROM bluetooth_mics WHERE mac_address = ?",
             (mac,),
         ).fetchone()
         registered_at = existing["registered_at"] if existing else now
+        metadata = self._parse_bluetooth_mic_metadata(existing["metadata"] if existing else "{}")
+        if metadata_patch:
+            metadata.update(metadata_patch)
+        rec_enabled = (
+            int(record_enabled)
+            if record_enabled is not None
+            else (existing["record_enabled"] if existing else 0)
+        )
         conn.execute(
             """
             INSERT INTO bluetooth_mics (
                 mac_address, device_name, connected, record_enabled, paired,
                 registered_at, last_seen_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mac_address) DO UPDATE SET
                 device_name = COALESCE(excluded.device_name, bluetooth_mics.device_name),
                 connected = excluded.connected,
                 record_enabled = excluded.record_enabled,
                 paired = excluded.paired,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                metadata = excluded.metadata
             """,
             (
                 mac,
                 device_name,
                 int(connected),
-                int(record_enabled),
+                rec_enabled,
                 int(paired),
                 registered_at,
                 now,
+                json.dumps(metadata),
             ),
         )
         conn.commit()
         record = self.get_bluetooth_mic(mac)
         assert record is not None
         return record
+
+    @staticmethod
+    def _parse_bluetooth_mic_metadata(raw: str | None) -> dict[str, Any]:
+        if not raw or raw == "{}":
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def update_bluetooth_mic_settings(
+        self,
+        mac_address: str,
+        *,
+        display_name: str | None = None,
+        recording_mode: str | None = None,
+        recording_interval_sec: int | None = None,
+        record_enabled: bool | None = None,
+        recording_active: bool | None = None,
+    ) -> "BluetoothMicRecord | None":
+        from nilo_node.bluetooth.models import normalize_mac
+
+        mac = normalize_mac(mac_address)
+        conn = self._db.connect()
+        row = conn.execute(
+            "SELECT * FROM bluetooth_mics WHERE mac_address = ?",
+            (mac,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        metadata = self._parse_bluetooth_mic_metadata(row["metadata"])
+        if display_name is not None:
+            metadata["display_name"] = display_name.strip() or None
+        if recording_mode is not None:
+            metadata["recording_mode"] = recording_mode
+        if recording_interval_sec is not None:
+            metadata["recording_interval_sec"] = recording_interval_sec
+        if recording_active is not None:
+            metadata["recording_active"] = recording_active
+
+        updates: list[str] = ["last_seen_at = ?", "metadata = ?"]
+        params: list[Any] = [_utc_now_iso(), json.dumps(metadata)]
+        if record_enabled is not None:
+            updates.append("record_enabled = ?")
+            params.append(int(record_enabled))
+
+        params.append(mac)
+        conn.execute(
+            f"UPDATE bluetooth_mics SET {', '.join(updates)} WHERE mac_address = ?",
+            params,
+        )
+        conn.commit()
+        return self.get_bluetooth_mic(mac)
+
+    def delete_bluetooth_mic(self, mac_address: str) -> bool:
+        from nilo_node.bluetooth.models import normalize_mac
+
+        mac = normalize_mac(mac_address)
+        conn = self._db.connect()
+        cursor = conn.execute(
+            "DELETE FROM bluetooth_mics WHERE mac_address = ?",
+            (mac,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
 
     def get_bluetooth_mic(self, mac_address: str) -> "BluetoothMicRecord | None":
         from nilo_node.bluetooth.models import normalize_mac
@@ -798,7 +876,7 @@ class StateRepository:
             INSERT INTO bluetooth_mics (
                 mac_address, device_name, connected, record_enabled, paired,
                 registered_at, last_seen_at, metadata
-            ) VALUES (?, ?, 0, 1, 0, ?, ?, '{}')
+            ) VALUES (?, ?, 0, 0, 0, ?, ?, '{}')
             ON CONFLICT(mac_address) DO UPDATE SET
                 device_name = COALESCE(excluded.device_name, bluetooth_mics.device_name),
                 last_seen_at = excluded.last_seen_at
@@ -809,13 +887,24 @@ class StateRepository:
 
     @staticmethod
     def _row_to_bluetooth_mic(row: Any) -> "BluetoothMicRecord":
-        from nilo_node.bluetooth.models import BluetoothMicRecord
+        from nilo_node.bluetooth.models import BluetoothMicRecord, RecordingMode
+
+        metadata = StateRepository._parse_bluetooth_mic_metadata(row["metadata"])
+        mode_raw = metadata.get("recording_mode", RecordingMode.ON_DEMAND.value)
+        try:
+            recording_mode = RecordingMode(mode_raw)
+        except ValueError:
+            recording_mode = RecordingMode.ON_DEMAND
 
         return BluetoothMicRecord(
             mac_address=row["mac_address"],
             device_name=row["device_name"],
+            display_name=metadata.get("display_name"),
             connected=bool(row["connected"]),
             record_enabled=bool(row["record_enabled"]),
+            recording_mode=recording_mode,
+            recording_interval_sec=int(metadata.get("recording_interval_sec") or 60),
+            recording_active=bool(metadata.get("recording_active")),
             paired=bool(row["paired"]),
             registered_at=datetime.fromisoformat(row["registered_at"]),
             last_seen_at=datetime.fromisoformat(row["last_seen_at"]),

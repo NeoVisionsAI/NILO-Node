@@ -158,6 +158,67 @@ class CameraManager:
         self._last_preview_error = "Preview no disponible para este pipeline"
         return None
 
+    async def test_pose(self) -> dict[str, object]:
+        """Capture one frame and run the configured pose engine (on demand)."""
+        import base64
+        import time
+
+        import cv2
+        import numpy as np
+
+        from nilo_node.camera.pose.factory import build_pose_engine
+        from nilo_node.camera.pose.mediapipe_engine import draw_pose_landmarks
+
+        jpeg = await self.get_preview_jpeg(wait_for_frame=True)
+        if jpeg is None:
+            return {
+                "ok": False,
+                "frame_available": False,
+                "engine_available": False,
+                "error": self._last_preview_error or "No hay frame disponible",
+            }
+
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return {
+                "ok": False,
+                "frame_available": False,
+                "engine_available": False,
+                "error": "No se pudo decodificar el frame JPEG",
+            }
+
+        engine = build_pose_engine(self._camera_cfg)
+        landmarks = engine.process(frame, time.time())
+        visible = int(np.sum(landmarks[:, 3] > 0.5))
+        engine_available = getattr(engine, "available", engine.engine_id != "stub")
+
+        result: dict[str, object] = {
+            "ok": engine_available,
+            "frame_available": True,
+            "engine_available": engine_available,
+            "engine_id": engine.engine_id,
+            "pose_detected": visible > 0,
+            "landmarks_detected": visible,
+            "landmark_count": engine.landmark_count,
+            "pose_backend": self._camera_cfg.pose_backend,
+        }
+
+        if visible > 0:
+            annotated = draw_pose_landmarks(frame, landmarks)
+            ann_jpeg = self._encode_jpeg(annotated)
+            if ann_jpeg:
+                result["annotated_jpeg_base64"] = base64.b64encode(ann_jpeg).decode("ascii")
+
+        if not engine_available:
+            result["error"] = (
+                "Motor de pose no disponible — revisa mediapipe en el contenedor"
+            )
+        elif visible == 0:
+            result["message"] = "MediaPipe activo pero no detectó cuerpo en este frame"
+
+        return result
+
     def set_campaign(self, campaign: Campaign | None) -> None:
         self._active_campaign = campaign
         if campaign is not None:
