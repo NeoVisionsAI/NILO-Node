@@ -1,15 +1,19 @@
 [Unit]
-Description=NILO-Node Docker Compose
+Description=NILO-Node edge capture platform (Docker)
+Documentation=file:/opt/nilo-node/README.md
 Requires=docker.service
 After=docker.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/nilo-node
-ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
-ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
-TimeoutStartSec=0
+Environment=NILO_INSTALL_DIR=/opt/nilo-node
+Environment=API_PORT=8080
+ExecStart=/opt/nilo-node/scripts/nilo-systemd-boot.sh
+ExecStop=/usr/bin/docker compose -p nilo-node -f docker-compose.prod.yml down
+TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target

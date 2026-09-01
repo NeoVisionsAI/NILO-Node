@@ -43,7 +43,7 @@ xhost +local:docker    # once per desktop session
 
 See [`scripts/oak/README.md`](scripts/oak/README.md).
 
-Production deploy (`./scripts/install.sh`) builds the same **hardware** image for the mini PC with OAK.
+Production deploy (`./scripts/install.sh`) builds the same **hardware** image for the mini PC with OAK. The Docker build installs **PyTorch CPU-only** (no CUDA/NVIDIA) before ultralytics/YOLO.
 
 ## Phase 6 (current)
 
@@ -205,7 +205,7 @@ sudo NILO_IMAGE=ghcr.io/neovisions/nilo-node:latest ./scripts/deploy.sh install
 | `NILO_IMAGE` | *(empty = build)* | Docker Hub / GHCR image tag |
 | `NILO_REPO` | GitHub URL | Clone source when not using image |
 | `NILO_REPO_BRANCH` | `main` | Branch to deploy |
-| `INSTALL_SYSTEMD` | `0` | Set `1` to register systemd unit |
+| `INSTALL_SYSTEMD` | `1` | Set `0` to skip systemd auto-start on boot |
 | `NONINTERACTIVE` | `0` | Set `1` to auto-generate secrets |
 
 Secrets live in `${NILO_INSTALL_DIR}/.env` (see [`deploy/env.example`](deploy/env.example)). Config: `config/nilo-node.yaml` (created from example on first install; PoE camera settings applied by `deploy.sh update`).

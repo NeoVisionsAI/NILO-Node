@@ -59,12 +59,15 @@ RUN apt-get update \
     && printf '%s\n' '# NILO-Node manages dnsmasq via /data/wifi/dnsmasq.conf' > /etc/dnsmasq.conf \
     && rm -rf /var/lib/apt/lists/*
 
-# Heavy deps (depthai, mediapipe, ultralytics/torch) — cached until pyproject.toml changes
+# Heavy deps (depthai, mediapipe, ultralytics) — cached until pyproject.toml changes
+# Install PyTorch CPU *before* ultralytics so pip does not pull CUDA/NVIDIA wheels.
 RUN mkdir -p src/nilo_node \
     && printf '%s\n' '__version__ = "0.0.0"' > src/nilo_node/__init__.py \
+    && pip install --no-cache-dir torch torchvision \
+        --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir ".[hardware]"
 
-# Application code only — fast rebuild, no re-download of NVIDIA/torch wheels
+# Application code only — fast rebuild without re-downloading heavy wheels
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps .
 

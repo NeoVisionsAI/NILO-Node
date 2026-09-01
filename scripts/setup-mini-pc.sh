@@ -10,6 +10,7 @@
 #    • Credenciales .env (menú interactivo la 1ª vez; Enter/10s = mantener)
 #    • Docker + contenedor NILO-Node — install la 1ª vez, update si ya existe
 #    • WiFi AP + portal /setup/ — limpieza, 2.4 GHz, arranque
+#    • systemd (arranque automático al reiniciar el PC) — habilitado por defecto
 #    • Red PoE (opcional, menú) — se omite si ya está configurada
 #
 #  Opciones:
@@ -19,6 +20,7 @@
 #    sudo NONINTERACTIVE=1 ./scripts/setup-mini-pc.sh
 #    sudo FORCE_APT=1 ./scripts/setup-mini-pc.sh      # reinstalar paquetes apt
 #    sudo FORCE_POE=1 ./scripts/setup-mini-pc.sh      # reconfigurar PoE
+#    sudo INSTALL_SYSTEMD=0 ./scripts/setup-mini-pc.sh   # sin servicio systemd
 #
 #  Tras ejecutar: WiFi nilo-node-XXXXXXXX → http://192.168.50.1:8080/setup/
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -39,7 +41,7 @@ fi
 POE_IFACE="${POE_IFACE:-}"
 SKIP_POE="${SKIP_POE:-0}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
-INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
+INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 FORCE_APT="${FORCE_APT:-0}"
 FORCE_POE="${FORCE_POE:-0}"
 POE_STATE_FILE="${POE_STATE_FILE:-${NILO_INSTALL_DIR}/config/poe.env}"

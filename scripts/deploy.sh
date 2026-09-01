@@ -10,7 +10,8 @@
 #   sudo NILO_DOCKER_PULL=1 ./scripts/deploy.sh update   # also refresh base images
 #   ./scripts/deploy.sh status                    # health + container state
 #   ./scripts/deploy.sh logs [-f]                 # compose logs
-#   sudo ./scripts/deploy.sh stop                 # stop container
+#   sudo ./scripts/deploy.sh enable-autostart    # servicio systemd al arrancar el PC
+#   sudo ./scripts/deploy.sh disable-autostart   # quitar arranque automático
 #   sudo ./scripts/deploy.sh uninstall            # stop (+ optional data wipe)
 #
 # Environment (optional):
@@ -19,7 +20,7 @@
 #   NILO_REPO_BRANCH=main
 #   NILO_IMAGE=ghcr.io/org/nilo-node:latest   # skip build, pull from registry
 #   DEPLOY_MODE=auto|git|image                  # default: auto
-#   INSTALL_SYSTEMD=1                         # install systemd unit on install
+#   INSTALL_SYSTEMD=0                         # omitir servicio systemd (arranque automático es el default)
 #   NONINTERACTIVE=1                            # no prompts (generates secrets)
 #
 # Examples:
@@ -43,7 +44,7 @@ NILO_REPO_BRANCH="${NILO_REPO_BRANCH:-main}"
 NILO_IMAGE="${NILO_IMAGE:-}"
 DEPLOY_MODE="${DEPLOY_MODE:-auto}"
 NILO_DOCKER_PULL="${NILO_DOCKER_PULL:-0}"
-INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-0}"
+INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 API_PORT="${API_PORT:-8080}"
 ENV_SECRETS_CHANGED=0
@@ -694,12 +695,54 @@ compose_reload() {
 
 install_systemd_unit() {
   local unit_src="${NILO_INSTALL_DIR}/deploy/systemd/nilo-node.service"
+  local boot_script="${NILO_INSTALL_DIR}/scripts/nilo-systemd-boot.sh"
   [[ -f "${unit_src}" ]] || { warn "systemd unit not found, skipping"; return; }
+  [[ -f "${boot_script}" ]] || { warn "nilo-systemd-boot.sh not found, skipping"; return; }
 
+  chmod +x "${boot_script}"
   sed "s|/opt/nilo-node|${NILO_INSTALL_DIR}|g" "${unit_src}" >/etc/systemd/system/nilo-node.service
   systemctl daemon-reload
   systemctl enable nilo-node.service
-  log "systemd unit installed: nilo-node.service (enable/start with: systemctl start nilo-node)"
+  log "systemd: nilo-node.service habilitado (arranque automático al reiniciar el PC)"
+}
+
+ensure_docker_enabled() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable docker.service 2>/dev/null || systemctl enable docker 2>/dev/null || true
+  fi
+}
+
+ensure_autostart() {
+  if [[ "${INSTALL_SYSTEMD}" == "0" ]]; then
+    log "INSTALL_SYSTEMD=0 — omitiendo servicio de arranque automático"
+    return 0
+  fi
+  ensure_docker_enabled
+  install_systemd_unit || warn "No se pudo instalar nilo-node.service"
+}
+
+cmd_enable_autostart() {
+  need_root enable-autostart
+  [[ -d "${NILO_INSTALL_DIR}" ]] || die "Not installed at ${NILO_INSTALL_DIR} — run: sudo $0 install"
+  INSTALL_SYSTEMD=1 ensure_autostart
+  if systemctl is-active nilo-node.service >/dev/null 2>&1; then
+    log "Servicio ya activo — recargando..."
+    systemctl restart nilo-node.service
+  else
+    systemctl start nilo-node.service 2>/dev/null || true
+  fi
+  log "Arranque automático activado. Comprueba: systemctl status nilo-node"
+}
+
+cmd_disable_autostart() {
+  need_root disable-autostart
+  if [[ -f /etc/systemd/system/nilo-node.service ]]; then
+    systemctl disable nilo-node.service 2>/dev/null || true
+    systemctl stop nilo-node.service 2>/dev/null || true
+    log "Arranque automático desactivado (contenedor parado). Para arrancar manualmente: sudo $0 reload"
+  else
+    warn "nilo-node.service no está instalado"
+  fi
 }
 
 wait_healthy() {
@@ -758,9 +801,7 @@ cmd_install() {
   fi
   compose_up "${mode}"
 
-  if [[ "${INSTALL_SYSTEMD}" == "1" ]]; then
-    install_systemd_unit
-  fi
+  ensure_autostart
 
   wait_healthy || health_ok=0
   finalize_portal_credentials || true
@@ -822,6 +863,7 @@ cmd_update() {
     cleanup_stale_uap0
   fi
   compose_update "${mode}"
+  ensure_autostart
   wait_healthy || health_ok=0
   finalize_portal_credentials || true
   if [[ "${health_ok:-1}" == "1" ]]; then
@@ -956,6 +998,8 @@ main() {
     configure-credentials) cmd_configure_credentials ;;
     apply-credentials) cmd_apply_credentials ;;
     sync-credentials) cmd_sync_credentials ;;
+    enable-autostart) cmd_enable_autostart ;;
+    disable-autostart) cmd_disable_autostart ;;
     -h|--help|help) usage 0 ;;
     *)
       die "Unknown command: ${cmd}. Use: install | update | reload | configure-credentials | status | logs | stop | uninstall"
