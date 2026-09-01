@@ -1,13 +1,14 @@
 const TOKEN_KEY = "nilo_setup_token";
 const THEME_KEY = "nilo_theme";
-const TITLES = {
-  dashboard: "Panel",
-  wifi: "WiFi",
-  camera: "Cámara",
-  bluetooth: "Audio inalámbrico",
-  monitoring: "Monitorización",
-  mqtt: "MQTT",
+const PAGE_META = {
+  dashboard: { title: "Panel", subtitle: "Estado general del nodo", icon: "◉" },
+  wifi: { title: "WiFi", subtitle: "Punto de acceso y credenciales", icon: "⌂" },
+  camera: { title: "Cámara", subtitle: "Conexión OAK, capturas y modelo", icon: "▣" },
+  bluetooth: { title: "Audio BT", subtitle: "Micrófonos inalámbricos", icon: "♫" },
+  monitoring: { title: "Monitorización", subtitle: "Registro, pose y servidor", icon: "◷" },
+  mqtt: { title: "MQTT", subtitle: "Broker y canales del nodo", icon: "⇄" },
 };
+const TITLES = Object.fromEntries(Object.entries(PAGE_META).map(([k, v]) => [k, v.title]));
 
 const CAM_STATE_LABELS = {
   disconnected: "Desconectada",
@@ -26,6 +27,14 @@ const MON_DAYS = [
   { id: "sun", label: "Dom" },
 ];
 
+const EXPORT_STREAMS = [
+  { id: "rgb_video", field: "export_rgb_video", label: "Vídeo RGB" },
+  { id: "tof_video", field: "export_tof_video", label: "Vídeo ToF" },
+  { id: "person_depth", field: "export_person_depth", label: "Profundidad persona" },
+  { id: "pose_data", field: "export_pose_data", label: "Pose Estimator" },
+  { id: "audio_data", field: "export_audio_data", label: "Audio" },
+];
+
 const $ = (id) => document.getElementById(id);
 
 let loadingCount = 0;
@@ -33,6 +42,38 @@ let camStatusCache = null;
 let dashboardCache = null;
 let monitoringWindows = [];
 let monitoringEnabled = false;
+let requiredLandmarksSelection = new Set();
+let monitoringCameraModelLoaded = false;
+let btWaveformAnim = null;
+let exportEthernetDevices = [];
+
+const MEDIAPIPE_POSE = {
+  points: [
+    [100, 42], [96, 36], [94, 36], [92, 36], [104, 36], [106, 36], [108, 36],
+    [88, 44], [112, 44], [94, 52], [106, 52], [78, 88], [122, 88], [68, 128], [132, 128],
+    [58, 168], [142, 168], [52, 178], [148, 178], [54, 162], [146, 162], [56, 154], [144, 154],
+    [86, 198], [114, 198], [82, 258], [118, 258], [80, 318], [120, 318], [78, 332], [122, 332],
+    [82, 340], [118, 340],
+  ],
+  bones: [
+    [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10], [11, 12],
+    [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19], [12, 14], [14, 16], [16, 18],
+    [16, 20], [16, 22], [18, 20], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [27, 29],
+    [27, 31], [29, 31], [24, 26], [26, 28], [28, 30], [28, 32], [30, 32],
+  ],
+};
+
+const YOLO_POSE = {
+  points: [
+    [100, 42], [92, 38], [108, 38], [84, 44], [116, 44], [78, 88], [122, 88], [68, 128],
+    [132, 128], [58, 168], [142, 168], [86, 198], [114, 198], [82, 258], [118, 258], [80, 318],
+    [120, 318],
+  ],
+  bones: [
+    [0, 1], [0, 2], [1, 3], [2, 4], [5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12],
+    [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+  ],
+};
 
 function authHeaders() {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -162,12 +203,19 @@ async function api(path, options = {}) {
   return res;
 }
 
+function updatePageHeading(name) {
+  const meta = PAGE_META[name] || { title: name, subtitle: "", icon: "•" };
+  if ($("page-title")) $("page-title").textContent = meta.title;
+  if ($("page-subtitle")) $("page-subtitle").textContent = meta.subtitle || "";
+  if ($("page-icon")) $("page-icon").textContent = meta.icon || "•";
+}
+
 function showTab(name) {
   document.querySelectorAll(".page").forEach((el) => el.classList.add("hidden"));
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
   $(`tab-${name}`).classList.remove("hidden");
   document.querySelector(`[data-tab="${name}"]`).classList.add("active");
-  $("page-title").textContent = TITLES[name] || name;
+  updatePageHeading(name);
   if (name === "camera") {
     loadCameraStatus({ silent: true }).catch(() => {});
   }
@@ -273,6 +321,19 @@ async function loadSettingsForms() {
     const mon = normalizeMonitoringSettings({ ...merged.monitoring });
     fillForm($("monitoring-model-form"), mon);
     if ($("mon-api-host")) $("mon-api-host").value = mon.api_host || "nilomed.eu";
+    if (Array.isArray(mon.required_landmarks)) {
+      setRequiredLandmarks(mon.required_landmarks);
+    } else if (mon.require_full_pose) {
+      const map = landmarkMapForBackend(mon.pose_backend || "mediapipe");
+      setRequiredLandmarks(map.points.map((_, i) => i));
+    } else {
+      requiredLandmarksSelection = new Set();
+      renderLandmarksSvg();
+    }
+    updateMonitoringModelFields().catch(() => {});
+  }
+  if ($("monitoring-export-form")) {
+    loadDataExportSettings(merged.monitoring?.data_export || {});
   }
   return merged;
 }
@@ -347,6 +408,216 @@ function normalizeMonitoringSettings(mon = {}) {
   if (!out.api_host) out.api_host = "nilomed.eu";
   if (!out.pose_fps) out.pose_fps = 30;
   return out;
+}
+
+function activeLandmarkBackend() {
+  const placement = $("mon-model-placement")?.value || "host";
+  if (placement === "device" && monitoringCameraModelLoaded) {
+    return camStatusCache?.model?.backend || dashboardCache?.camera_model?.backend || "mediapipe";
+  }
+  const backend = $("mon-pose-backend")?.value || "mediapipe";
+  return backend === "none" ? "mediapipe" : backend;
+}
+
+function landmarkMapForBackend(backend) {
+  return backend === "yolo" ? YOLO_POSE : MEDIAPIPE_POSE;
+}
+
+function setRequiredLandmarks(indices) {
+  requiredLandmarksSelection = new Set(indices);
+  renderLandmarksSvg();
+}
+
+function renderLandmarksSvg() {
+  const svg = $("mon-landmarks-svg");
+  if (!svg) return;
+  const backend = activeLandmarkBackend();
+  const map = landmarkMapForBackend(backend);
+  const bones = map.bones
+    .map(([a, b]) => {
+      const p1 = map.points[a];
+      const p2 = map.points[b];
+      return `<line class="lm-bone" x1="${p1[0]}" y1="${p1[1]}" x2="${p2[0]}" y2="${p2[1]}" />`;
+    })
+    .join("");
+  const dots = map.points
+    .map(([x, y], i) => {
+      const selected = requiredLandmarksSelection.has(i) ? " selected" : "";
+      return `<circle class="lm-point${selected}" data-idx="${i}" cx="${x}" cy="${y}" r="6" tabindex="0" role="button" aria-label="Punto ${i + 1}" />`;
+    })
+    .join("");
+  svg.innerHTML = `${bones}${dots}`;
+  svg.querySelectorAll(".lm-point").forEach((pt) => {
+    pt.addEventListener("click", () => {
+      const idx = Number(pt.dataset.idx);
+      if (requiredLandmarksSelection.has(idx)) requiredLandmarksSelection.delete(idx);
+      else requiredLandmarksSelection.add(idx);
+      renderLandmarksSvg();
+    });
+  });
+}
+
+async function updateMonitoringModelFields() {
+  const placement = $("mon-model-placement")?.value || "host";
+  const wrap = $("mon-pose-backend-wrap");
+  const hint = $("mon-camera-model-hint");
+  let loaded = false;
+  let backend = null;
+  try {
+    const s = camStatusCache || (await api("/api/v1/camera/status", { silent: true }));
+    camStatusCache = s;
+    loaded = Boolean(s.model?.loaded && s.model?.placement === "device");
+    backend = s.model?.backend;
+    monitoringCameraModelLoaded = loaded;
+  } catch {
+    loaded = Boolean(dashboardCache?.camera_model?.loaded);
+    backend = dashboardCache?.camera_model?.backend;
+    monitoringCameraModelLoaded = loaded;
+  }
+  const hideBackend = placement === "device" && loaded;
+  if (wrap) {
+    const selectLabel = wrap.querySelector("label");
+    if (selectLabel) selectLabel.classList.toggle("hidden", hideBackend);
+  }
+  if (hint) {
+    hint.classList.toggle("hidden", !hideBackend);
+    if (hideBackend && backend) {
+      hint.textContent = `Usando ${backend === "yolo" ? "YOLO" : "MediaPipe"} ya cargado en la cámara OAK.`;
+    }
+  }
+  renderLandmarksSvg();
+}
+
+function setCameraPreviewSynthetic(active) {
+  $("cam-panel-live")?.querySelector(".preview-wrap")?.classList.toggle("synthetic-warning", Boolean(active));
+}
+
+function getExportDestination(streamId) {
+  const stream = EXPORT_STREAMS.find((s) => s.id === streamId);
+  if (!stream) return "local";
+  const checked = document.querySelector(`input[name="${stream.field}"]:checked`);
+  return checked?.value || "local";
+}
+
+function updateExportEthernetUi() {
+  let anyEthernet = false;
+  for (const stream of EXPORT_STREAMS) {
+    const dest = getExportDestination(stream.id);
+    const row = document.querySelector(`.export-ethernet-row[data-ethernet-for="${stream.id}"]`);
+    row?.classList.toggle("hidden", dest !== "ethernet");
+    if (dest === "ethernet") anyEthernet = true;
+  }
+  $("mon-export-ethernet-panel")?.classList.toggle("hidden", !anyEthernet);
+}
+
+function populateEthernetDeviceSelects() {
+  document.querySelectorAll(".export-eth-device").forEach((sel) => {
+    const previous = sel.value;
+    const options = ['<option value="">Selecciona dispositivo</option>'];
+    for (const dev of exportEthernetDevices) {
+      options.push(
+        `<option value="${btEscape(dev.id)}">${btEscape(dev.label)} (${btEscape(dev.ip)})</option>`,
+      );
+    }
+    sel.innerHTML = options.join("");
+    sel.disabled = exportEthernetDevices.length === 0;
+    if (previous && exportEthernetDevices.some((d) => d.id === previous)) sel.value = previous;
+  });
+}
+
+function renderEthernetDeviceList() {
+  const list = $("mon-export-eth-list");
+  if (!list) return;
+  if (!exportEthernetDevices.length) {
+    list.innerHTML = "<li class='empty-item'>Ningún dispositivo — pulsa «Escanear red»</li>";
+    return;
+  }
+  list.innerHTML = exportEthernetDevices
+    .map(
+      (dev) => `<li>
+        <div><div class="name">${btEscape(dev.label)}</div><div class="meta">${btEscape(dev.ip)} · ${btEscape(dev.mac || "—")}</div></div>
+        <span class="meta">${btEscape(dev.kind || "ethernet")}</span>
+      </li>`,
+    )
+    .join("");
+}
+
+function loadDataExportSettings(dataExport = {}) {
+  const form = $("monitoring-export-form");
+  if (!form) return;
+  for (const stream of EXPORT_STREAMS) {
+    const cfg = dataExport[stream.id] || {};
+    const dest = cfg.destination || "local";
+    const radio = form.querySelector(`input[name="${stream.field}"][value="${dest}"]`);
+    if (radio) radio.checked = true;
+    const select = form.querySelector(`.export-eth-device[data-stream="${stream.id}"]`);
+    if (select && cfg.ethernet_device) select.value = cfg.ethernet_device;
+  }
+  if (Array.isArray(dataExport._ethernet_devices)) {
+    exportEthernetDevices = dataExport._ethernet_devices;
+    populateEthernetDeviceSelects();
+    renderEthernetDeviceList();
+  }
+  updateExportEthernetUi();
+}
+
+function collectDataExportSettings() {
+  const out = { _ethernet_devices: exportEthernetDevices };
+  for (const stream of EXPORT_STREAMS) {
+    const select = document.querySelector(`.export-eth-device[data-stream="${stream.id}"]`);
+    out[stream.id] = {
+      destination: getExportDestination(stream.id),
+      ethernet_device: select?.value || null,
+    };
+  }
+  return out;
+}
+
+async function mockScanEthernetDevices() {
+  const progress = $("mon-export-eth-progress");
+  const statusEl = $("mon-export-eth-status");
+  const btn = $("mon-export-eth-scan");
+  progress?.classList.remove("hidden");
+  statusEl?.classList.remove("hidden");
+  if (statusEl) statusEl.textContent = "Escaneando dispositivos en la red local…";
+  if (btn) btn.disabled = true;
+  await new Promise((r) => setTimeout(r, 1400));
+  exportEthernetDevices = [
+    { id: "eth-nas-01", label: "NAS clínica", ip: "192.168.50.50", mac: "00:11:22:33:44:55", kind: "NAS" },
+    { id: "eth-rec-02", label: "Grabador análisis", ip: "192.168.50.120", mac: "AA:BB:CC:DD:EE:01", kind: "Recorder" },
+    { id: "eth-poe-03", label: "Estación PoE", ip: "169.254.1.10", mac: "DE:AD:BE:EF:00:01", kind: "Bridge" },
+  ];
+  populateEthernetDeviceSelects();
+  renderEthernetDeviceList();
+  if (statusEl) {
+    statusEl.textContent = `${exportEthernetDevices.length} dispositivo(s) detectado(s) — selección simulada (pendiente de backend)`;
+  }
+  progress?.classList.add("hidden");
+  if (btn) btn.disabled = false;
+  showToast("Escaneo Ethernet completado (simulación)", "ok");
+}
+
+function initMonitoringExportPanel() {
+  const form = $("monitoring-export-form");
+  if (!form) return;
+  form.querySelectorAll('input[type="radio"][name^="export_"]').forEach((input) => {
+    input.addEventListener("change", updateExportEthernetUi);
+  });
+  $("mon-export-eth-scan")?.addEventListener("click", () => {
+    mockScanEthernetDevices().catch((err) => showToast(err.message, "error"));
+  });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const patch = {
+      data_export: collectDataExportSettings(),
+      api_host: ($("mon-api-host")?.value || "nilomed.eu").trim(),
+      enabled: monitoringEnabled,
+    };
+    await saveSettings("monitoring", patch, "Volcado de datos");
+    await loadMonitoringTab({ silent: true });
+  });
+  updateExportEthernetUi();
+  renderEthernetDeviceList();
 }
 
 function updateDashboardHero(d) {
@@ -538,10 +809,13 @@ function updateCamConnectionIcon(s) {
 
   if (state === "connected") {
     icon.textContent = "●";
-    hint.textContent =
-      s.pipeline_mode === "mock"
-        ? "Modo simulación — Capturar RGB o ToF bajo demanda"
-        : `Conectada (${s.connected_device_id || "OAK"}) — Capturar RGB o ToF`;
+    if (s.preview_synthetic) {
+      hint.textContent = "Enlace activo pero sin frames reales — revisa PoE e IP de la cámara";
+    } else if (s.pipeline_mode === "mock") {
+      hint.textContent = "Modo simulación — Capturar RGB o ToF bajo demanda";
+    } else {
+      hint.textContent = `Conectada (${s.connected_device_id || "OAK"}) — Capturar RGB o ToF`;
+    }
   } else if (state === "connecting") {
     icon.textContent = "◌";
     hint.textContent = "Estableciendo enlace con la cámara…";
@@ -581,7 +855,7 @@ function renderModelStatus(model) {
   if (badge) badge.classList.toggle("hidden", !loadedOnDevice);
   if (!el) return;
   const rows = [
-    ["Backend", model.backend || "—"],
+    ["Pose Estimator", model.backend || "—"],
     ["Estado", model.message || model.last_error || (loadedOnDevice ? "Cargado en OAK" : "Sin cargar")],
   ];
   if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
@@ -604,6 +878,7 @@ function renderCameraStatusSummary(s) {
   if (s.model?.loaded) {
     rows.push(["Modelo cargado", `${s.model.backend} (${s.model.placement})`]);
   }
+  if (s.preview_synthetic) rows.push(["Vista previa", "Sintética (sin frames OAK)"]);
   if (s.last_error) rows.push(["Último error", s.last_error]);
   $("cam-status-summary").innerHTML = rows
     .map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`)
@@ -614,17 +889,29 @@ function renderCameraStatusSummary(s) {
   renderModelStatus(s.model);
 
   if (s.connection_state === "connected") {
-    setCamBanner(
-      s.pipeline_mode === "mock"
-        ? "Conectado en modo simulación (mock) — captura bajo demanda"
-        : `Cámara conectada (${s.connected_device_id || "OAK"}) — captura bajo demanda`,
-      s.pipeline_mode === "mock" ? "warn" : "ok",
-    );
+    if (s.preview_synthetic) {
+      setCamBanner(
+        "La OAK no entrega frames reales (vista sintética). Comprueba PoE, cable e IP en Configuración.",
+        "err",
+      );
+      setCameraPreviewSynthetic(true);
+    } else {
+      setCameraPreviewSynthetic(false);
+      setCamBanner(
+        s.pipeline_mode === "mock"
+          ? "Conectado en modo simulación (mock) — captura bajo demanda"
+          : `Cámara conectada (${s.connected_device_id || "OAK"}) — captura bajo demanda`,
+        s.pipeline_mode === "mock" ? "warn" : "ok",
+      );
+    }
   } else if (s.connection_state === "error") {
+    setCameraPreviewSynthetic(false);
     setCamBanner(s.last_error || "Error al conectar la cámara", "err");
   } else if (s.connection_state === "connecting") {
+    setCameraPreviewSynthetic(false);
     setCamBanner("Conectando con la cámara…", "warn");
   } else {
+    setCameraPreviewSynthetic(false);
     setCamBanner("", "warn");
     $("cam-banner").classList.add("hidden");
   }
@@ -692,6 +979,7 @@ async function loadMonitoringTab(options = {}) {
   $("monitoring-summary").textContent = JSON.stringify(mon, null, 2);
   toggleMonitoringScheduleFields(mon.schedule_mode || "always");
   setMonitoringToggle(mon.enabled);
+  await updateMonitoringModelFields();
 }
 
 $("login-form").addEventListener("submit", async (e) => {
@@ -886,7 +1174,17 @@ async function captureSnapshot(stream, label) {
       });
       const ok = await showPreviewFromResponse(res, { notify: false, message: `${label} capturado` });
       if (ok) {
-        setCamBanner(`${label} capturado correctamente`, "ok");
+        if (camStatusCache?.preview_synthetic) {
+          setCamBanner(
+            `${label} capturado (placeholder sintético) — la cámara no entrega imagen real`,
+            "err",
+          );
+          setCameraPreviewSynthetic(true);
+          showToast("Captura sintética — revisa conexión PoE/IP de la OAK", "error");
+        } else {
+          setCamBanner(`${label} capturado correctamente`, "ok");
+          setCameraPreviewSynthetic(false);
+        }
         await loadCameraStatus({ silent: true });
         return;
       }
@@ -1058,8 +1356,31 @@ $("monitoring-model-form")?.addEventListener("submit", async (e) => {
   patch.require_full_pose = e.target.elements.require_full_pose.checked;
   patch.api_host = ($("mon-api-host")?.value || "nilomed.eu").trim();
   patch.enabled = monitoringEnabled;
+  patch.required_landmarks = [...requiredLandmarksSelection].sort((a, b) => a - b);
   await saveSettings("monitoring", patch, "Modelo y calidad de monitorización");
   await loadMonitoringTab({ silent: true });
+});
+
+$("mon-model-placement")?.addEventListener("change", () => {
+  updateMonitoringModelFields().catch(() => {});
+});
+$("mon-pose-backend")?.addEventListener("change", () => renderLandmarksSvg());
+
+$("mon-landmarks-btn")?.addEventListener("click", () => {
+  const panel = $("mon-landmarks-panel");
+  if (!panel) return;
+  const opening = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden");
+  if (opening) renderLandmarksSvg();
+});
+
+$("mon-landmarks-all")?.addEventListener("click", () => {
+  const map = landmarkMapForBackend(activeLandmarkBackend());
+  setRequiredLandmarks(map.points.map((_, i) => i));
+});
+
+$("mon-landmarks-none")?.addEventListener("click", () => {
+  setRequiredLandmarks([]);
 });
 
 const BT_RECORDING_MODE_LABELS = {
@@ -1072,6 +1393,62 @@ let btDiscoveredDevices = [];
 let btSelectedDiscoverMac = null;
 let btSelectedConnectedMac = null;
 let btStatusCache = null;
+
+function stopBtWaveformAnim() {
+  if (btWaveformAnim) {
+    cancelAnimationFrame(btWaveformAnim);
+    btWaveformAnim = null;
+  }
+}
+
+function drawWaveformPeaks(canvas, peaks, { live = false, phase = 0 } = {}) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  const mid = h / 2;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--bg-elevated").trim() || "#111";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--border").trim() || "#333";
+  ctx.beginPath();
+  ctx.moveTo(0, mid);
+  ctx.lineTo(w, mid);
+  ctx.stroke();
+
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#3b82f6";
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const count = peaks?.length || 64;
+  for (let i = 0; i < count; i += 1) {
+    const x = (i / Math.max(count - 1, 1)) * w;
+    let amp = peaks ? peaks[i] ?? 0 : 0;
+    if (live) {
+      amp = 0.15 + Math.abs(Math.sin(phase * 0.08 + i * 0.35)) * (0.35 + Math.random() * 0.25);
+    }
+    const y = mid - amp * (mid - 8);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function animateBtRecordingWaveform(durationSec) {
+  const canvas = $("bt-waveform-canvas");
+  if (!canvas) return;
+  $("bt-test-player-wrap")?.classList.remove("hidden");
+  stopBtWaveformAnim();
+  const start = performance.now();
+  const tick = (now) => {
+    const elapsed = (now - start) / 1000;
+    if (elapsed >= durationSec) return;
+    drawWaveformPeaks(canvas, null, { live: true, phase: now / 40 });
+    btWaveformAnim = requestAnimationFrame(tick);
+  };
+  btWaveformAnim = requestAnimationFrame(tick);
+}
 
 function btEscape(text) {
   return String(text ?? "")
@@ -1205,6 +1582,8 @@ async function loadBluetoothTab(options = {}) {
 
 $("bt-discover").addEventListener("click", async () => {
   const statusEl = $("bt-scan-status");
+  const progress = $("bt-scan-progress");
+  progress?.classList.remove("hidden");
   statusEl.classList.remove("hidden");
   statusEl.textContent = "Escaneando… permanece en esta pantalla unos segundos.";
   btSelectedDiscoverMac = null;
@@ -1219,12 +1598,16 @@ $("bt-discover").addEventListener("click", async () => {
     await loadBluetoothTab({ silent: true });
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
+  } finally {
+    progress?.classList.add("hidden");
   }
 });
 
 $("bt-connect-selected").addEventListener("click", async () => {
   if (!btSelectedDiscoverMac) return;
   const device = btDiscoveredDevices.find((d) => d.mac_address === btSelectedDiscoverMac);
+  const progress = $("bt-connect-progress");
+  progress?.classList.remove("hidden");
   try {
     await api("/api/v1/bluetooth/connect", {
       method: "POST",
@@ -1239,6 +1622,8 @@ $("bt-connect-selected").addEventListener("click", async () => {
     await loadBluetoothTab({ silent: true });
   } catch (err) {
     showToast(err.message, "error");
+  } finally {
+    progress?.classList.add("hidden");
   }
 });
 
@@ -1302,17 +1687,23 @@ $("bt-unpair-selected").addEventListener("click", async () => {
 $("bt-test-record").addEventListener("click", async () => {
   if (!btSelectedConnectedMac) return;
   const btn = $("bt-test-record");
+  const durationSec = 10;
   btn.disabled = true;
-  btn.textContent = "Grabando… (10 s)";
+  btn.textContent = `Grabando… (${durationSec} s)`;
+  animateBtRecordingWaveform(durationSec);
   try {
     const r = await api(
       `/api/v1/bluetooth/mics/${encodeURIComponent(btSelectedConnectedMac)}/test-recording`,
       {
         method: "POST",
-        body: JSON.stringify({ duration_sec: 10 }),
+        body: JSON.stringify({ duration_sec: durationSec }),
         successMessage: "Prueba de grabación completada",
       },
     );
+    stopBtWaveformAnim();
+    if (Array.isArray(r.waveform) && r.waveform.length) {
+      drawWaveformPeaks($("bt-waveform-canvas"), r.waveform);
+    }
     const res = await apiRequest(r.playback_url, { silent: true, jsonBody: false });
     const blob = await res.blob();
     const player = $("bt-test-player");
@@ -1322,6 +1713,7 @@ $("bt-test-record").addEventListener("click", async () => {
     player.src = url;
     $("bt-test-player-wrap").classList.remove("hidden");
   } catch (err) {
+    stopBtWaveformAnim();
     showToast(err.message, "error");
   } finally {
     btn.disabled = false;
@@ -1339,3 +1731,5 @@ initTheme();
 initSubtabs("camera-subtabs");
 initSubtabs("monitoring-subtabs");
 initSubtabs("mqtt-subtabs");
+initMonitoringExportPanel();
+updatePageHeading("dashboard");

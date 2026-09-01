@@ -22,6 +22,7 @@ from nilo_node.bluetooth.test_recording import (
     cleanup_old_test_recordings,
     record_test_wav,
     test_recordings_dir,
+    wav_waveform_peaks,
 )
 from nilo_node.bluetooth.writers import AudioTrackWriter, create_audio_writer
 from nilo_node.config.models import AppConfig, BluetoothConfig
@@ -415,13 +416,15 @@ class BluetoothManager:
             channels=self._bt.channels,
         )
         # UX: keep request open while the clip duration elapses (mock or real capture).
-        await asyncio.sleep(duration_sec)
+        await asyncio.sleep(max(0.0, duration_sec - 0.5))
+        waveform = wav_waveform_peaks(path)
         return {
             "recording_id": recording_id,
             "mac_address": mac,
             "duration_sec": duration_sec,
             "playback_path": str(path),
             "mock_audio": True,
+            "waveform": waveform,
         }
 
     def resolve_test_recording(self, recording_id: str) -> Path:

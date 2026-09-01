@@ -64,6 +64,36 @@ def _write_tone_wav(
                 wav.writeframes(packed)
 
 
+def wav_waveform_peaks(path: Path, *, buckets: int = 128) -> list[float]:
+    """Downsample WAV amplitudes to normalized peaks for UI waveform."""
+    with wave.open(str(path), "rb") as wav:
+        channels = wav.getnchannels()
+        sample_width = wav.getsampwidth()
+        frame_count = wav.getnframes()
+        raw = wav.readframes(frame_count)
+    if not raw or sample_width != 2:
+        return [0.0] * buckets
+    import struct
+
+    count = len(raw) // 2
+    samples = struct.unpack(f"<{count}h", raw[: count * 2])
+    if channels > 1:
+        samples = samples[::channels]
+    if not samples:
+        return [0.0] * buckets
+    chunk = max(1, len(samples) // buckets)
+    peaks: list[float] = []
+    for i in range(buckets):
+        start = i * chunk
+        end = min(len(samples), start + chunk)
+        if start >= end:
+            peaks.append(0.0)
+            continue
+        peak = max(abs(s) for s in samples[start:end]) / 32768.0
+        peaks.append(min(1.0, peak))
+    return peaks
+
+
 async def record_test_wav(
     output_dir: Path,
     mac_address: str,

@@ -94,6 +94,8 @@ class MonitoringSettingsPatch(BaseModel):
     model_placement: Literal["host", "device"] | None = None
     require_full_pose: bool | None = None
     pose_fps: int | None = Field(default=None, ge=1, le=60)
+    required_landmarks: list[int] | None = None
+    data_export: dict[str, Any] | None = None
 
 
 class MonitoringHealthRequest(BaseModel):

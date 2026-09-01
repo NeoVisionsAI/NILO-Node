@@ -365,6 +365,9 @@ class CameraManager:
 
     def get_status(self) -> CameraStatus:
         devices = discover_devices() if depthai_available() else []
+        preview_synthetic = False
+        if self._state == CameraConnectionState.CONNECTED:
+            preview_synthetic = bool(getattr(self._pipeline, "_use_synthetic", False))
         return CameraStatus(
             connection_state=self._state,
             connected_device_id=self._connected_device_id,
@@ -375,6 +378,7 @@ class CameraManager:
             last_error=self._last_error,
             last_preview_error=self._last_preview_error,
             depthai_available=depthai_available(),
+            preview_synthetic=preview_synthetic,
         )
 
     async def ensure_connected(self) -> None:

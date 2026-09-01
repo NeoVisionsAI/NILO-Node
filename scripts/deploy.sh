@@ -434,7 +434,7 @@ read_env_var() {
 }
 
 mask_secret_hint() {
-  local s="$1" n="${#s}"
+  local s="${1-}" n="${#s}"
   [[ "${n}" -eq 0 ]] && { echo "sin configurar"; return; }
   [[ "${n}" -le 2 ]] && { echo "**"; return; }
   printf '%s*** (%d chars)' "${s:0:2}" "${n}"
@@ -613,7 +613,7 @@ finalize_portal_credentials() {
 }
 
 ensure_env_secrets() {
-  configure_credentials_interactive
+  CREDENTIALS_PROMPT="" configure_credentials_interactive
   if [[ "${ENV_SECRETS_CHANGED:-0}" == "1" ]]; then
     log "Secrets actualizados en ${NILO_INSTALL_DIR}/.env"
   fi

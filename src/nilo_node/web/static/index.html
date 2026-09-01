@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=9" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -69,7 +69,13 @@
 
     <div class="main">
       <header class="topbar">
-        <h2 id="page-title">Panel</h2>
+        <div class="page-heading">
+          <span id="page-icon" class="page-icon" aria-hidden="true">◉</span>
+          <div>
+            <h2 id="page-title">Panel</h2>
+            <p id="page-subtitle" class="page-subtitle">Estado general del nodo</p>
+          </div>
+        </div>
         <div class="topbar-actions">
           <button id="theme-toggle" class="btn secondary theme-toggle" type="button" title="Cambiar tema">☀</button>
           <button id="logout-btn-top" class="btn ghost hide-mobile-label" type="button">Cerrar sesión</button>
@@ -160,8 +166,9 @@
         <div id="cam-panel-model" class="subtab-panel card hidden">
           <h3>Modelo en cámara OAK</h3>
           <p class="hint">Selecciona el backend y cárgalo en la cámara. La inferencia en el nodo se configura en Monitorización.</p>
-          <label>Backend a cargar
-            <select id="cam-model-backend">
+          <label class="field-select pose-estimator-select">
+            <span class="field-select-label">Pose Estimator</span>
+            <select id="cam-model-backend" class="select-styled">
               <option value="mediapipe">MediaPipe</option>
               <option value="yolo">YOLO</option>
             </select>
@@ -225,10 +232,18 @@
             <h3>Dispositivos detectados</h3>
             <p class="hint">Escanea y conecta — quedará guardado para reconexión automática.</p>
             <button id="bt-discover" class="btn primary">Escanear</button>
+            <div id="bt-scan-progress" class="progress-wrap hidden">
+              <div class="progress-label">Escaneando dispositivos…</div>
+              <div class="progress-bar indeterminate"><span></span></div>
+            </div>
             <p id="bt-scan-status" class="hint hidden"></p>
             <ul id="bt-discovered-list" class="device-list"></ul>
             <div id="bt-discovered-actions" class="row hidden">
               <button id="bt-connect-selected" class="btn primary">Conectar y guardar</button>
+            </div>
+            <div id="bt-connect-progress" class="progress-wrap hidden">
+              <div class="progress-label">Conectando micrófono…</div>
+              <div class="progress-bar indeterminate"><span></span></div>
             </div>
           </div>
           <div class="card">
@@ -266,6 +281,7 @@
           </div>
           <div id="bt-test-player-wrap" class="hidden">
             <p class="hint">Última prueba de grabación</p>
+            <canvas id="bt-waveform-canvas" class="waveform-canvas" width="640" height="120"></canvas>
             <audio id="bt-test-player" controls></audio>
           </div>
         </div>
@@ -288,6 +304,7 @@
         <div class="subtabs" id="monitoring-subtabs">
           <button type="button" class="subtab active" data-subtab="mon-panel-server">Servidor</button>
           <button type="button" class="subtab" data-subtab="mon-panel-model">Modelo</button>
+          <button type="button" class="subtab" data-subtab="mon-panel-export">Volcado</button>
           <button type="button" class="subtab" data-subtab="mon-panel-schedule">Intervalos</button>
         </div>
 
@@ -307,15 +324,18 @@
         <div id="mon-panel-model" class="subtab-panel card hidden">
           <h3>Modelo durante monitorización</h3>
           <form id="monitoring-model-form" class="form">
-            <label>Backend pose
-              <select name="pose_backend">
-                <option value="none">Sin modelo</option>
-                <option value="mediapipe">MediaPipe</option>
-                <option value="yolo">YOLO</option>
-              </select>
-            </label>
+            <div id="mon-pose-backend-wrap">
+              <label>Estimador de pose
+                <select name="pose_backend" id="mon-pose-backend">
+                  <option value="none">Sin modelo</option>
+                  <option value="mediapipe">MediaPipe</option>
+                  <option value="yolo">YOLO</option>
+                </select>
+              </label>
+              <p id="mon-camera-model-hint" class="hint hidden">Usando el modelo ya cargado en la cámara OAK.</p>
+            </div>
             <label>Ubicación
-              <select name="model_placement">
+              <select name="model_placement" id="mon-model-placement">
                 <option value="host">En el nodo (PC)</option>
                 <option value="device">En la cámara OAK</option>
               </select>
@@ -325,10 +345,180 @@
             </label>
             <p class="hint inline-hint">1 = ~1 frame/s de landmarks; 30 = todos los frames (cámara a 30 FPS).</p>
             <label class="check mon-check-large">
-              <input name="require_full_pose" type="checkbox" />
-              No registrar datos sin pose completa (33/33 landmarks visibles)
+              <input name="require_full_pose" type="checkbox" id="mon-require-full-pose" />
+              No registrar datos si faltan puntos del cuerpo seleccionados
             </label>
+            <button type="button" id="mon-landmarks-btn" class="btn secondary">Configurar puntos del cuerpo</button>
+            <div id="mon-landmarks-panel" class="landmarks-panel hidden">
+              <p class="hint">Pulsa cada punto para exigirlo en la pose. Los seleccionados deben estar visibles para registrar.</p>
+              <svg id="mon-landmarks-svg" class="landmarks-svg" viewBox="0 0 200 360" role="img" aria-label="Mapa de landmarks"></svg>
+              <div class="row">
+                <button type="button" id="mon-landmarks-all" class="btn ghost">Todos</button>
+                <button type="button" id="mon-landmarks-none" class="btn ghost">Ninguno</button>
+              </div>
+            </div>
             <button type="submit" class="btn primary">Guardar modelo y calidad</button>
+          </form>
+        </div>
+
+        <div id="mon-panel-export" class="subtab-panel card hidden">
+          <div class="export-intro">
+            <h3>Volcado de datos</h3>
+            <p class="hint">Define dónde se almacena cada flujo durante la monitorización. La lógica de envío se configurará en una fase posterior.</p>
+          </div>
+          <form id="monitoring-export-form" class="export-form">
+            <div id="mon-export-streams" class="export-streams-list">
+              <article class="export-stream-card" data-stream="rgb_video">
+                <div class="export-stream-head">
+                  <span class="export-stream-icon" aria-hidden="true">▣</span>
+                  <div class="export-stream-copy">
+                    <h4>Vídeo RGB</h4>
+                    <p>Secuencia de color de la cámara OAK.</p>
+                  </div>
+                </div>
+                <fieldset class="export-dest-fieldset">
+                  <legend class="sr-only">Destino vídeo RGB</legend>
+                  <div class="export-dest-options">
+                    <label class="export-dest-option"><input type="radio" name="export_rgb_video" value="local" checked /><span>Local</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_rgb_video" value="server" /><span>Servidor NILO</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_rgb_video" value="ethernet" /><span>Ethernet</span></label>
+                  </div>
+                </fieldset>
+                <div class="export-ethernet-row hidden" data-ethernet-for="rgb_video">
+                  <label class="field-select">
+                    <span class="field-select-label">Dispositivo Ethernet</span>
+                    <select class="select-styled export-eth-device" data-stream="rgb_video" disabled>
+                      <option value="">Escanea dispositivos primero</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+
+              <article class="export-stream-card" data-stream="tof_video">
+                <div class="export-stream-head">
+                  <span class="export-stream-icon" aria-hidden="true">◫</span>
+                  <div class="export-stream-copy">
+                    <h4>Vídeo ToF</h4>
+                    <p>Mapa de profundidad Time-of-Flight completo.</p>
+                  </div>
+                </div>
+                <fieldset class="export-dest-fieldset">
+                  <legend class="sr-only">Destino vídeo ToF</legend>
+                  <div class="export-dest-options">
+                    <label class="export-dest-option"><input type="radio" name="export_tof_video" value="local" checked /><span>Local</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_tof_video" value="server" /><span>Servidor NILO</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_tof_video" value="ethernet" /><span>Ethernet</span></label>
+                  </div>
+                </fieldset>
+                <div class="export-ethernet-row hidden" data-ethernet-for="tof_video">
+                  <label class="field-select">
+                    <span class="field-select-label">Dispositivo Ethernet</span>
+                    <select class="select-styled export-eth-device" data-stream="tof_video" disabled>
+                      <option value="">Escanea dispositivos primero</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+
+              <article class="export-stream-card" data-stream="person_depth">
+                <div class="export-stream-head">
+                  <span class="export-stream-icon" aria-hidden="true">◎</span>
+                  <div class="export-stream-copy">
+                    <h4>Profundidad de persona</h4>
+                    <p>Profundidad recortada o derivada del sujeto trackeado.</p>
+                  </div>
+                </div>
+                <fieldset class="export-dest-fieldset">
+                  <legend class="sr-only">Destino profundidad persona</legend>
+                  <div class="export-dest-options">
+                    <label class="export-dest-option"><input type="radio" name="export_person_depth" value="local" checked /><span>Local</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_person_depth" value="server" /><span>Servidor NILO</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_person_depth" value="ethernet" /><span>Ethernet</span></label>
+                  </div>
+                </fieldset>
+                <div class="export-ethernet-row hidden" data-ethernet-for="person_depth">
+                  <label class="field-select">
+                    <span class="field-select-label">Dispositivo Ethernet</span>
+                    <select class="select-styled export-eth-device" data-stream="person_depth" disabled>
+                      <option value="">Escanea dispositivos primero</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+
+              <article class="export-stream-card" data-stream="pose_data">
+                <div class="export-stream-head">
+                  <span class="export-stream-icon" aria-hidden="true">⧉</span>
+                  <div class="export-stream-copy">
+                    <h4>Pose Estimator</h4>
+                    <p>Landmarks, scores y metadatos de inferencia de pose.</p>
+                  </div>
+                </div>
+                <fieldset class="export-dest-fieldset">
+                  <legend class="sr-only">Destino pose estimator</legend>
+                  <div class="export-dest-options">
+                    <label class="export-dest-option"><input type="radio" name="export_pose_data" value="local" checked /><span>Local</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_pose_data" value="server" /><span>Servidor NILO</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_pose_data" value="ethernet" /><span>Ethernet</span></label>
+                  </div>
+                </fieldset>
+                <div class="export-ethernet-row hidden" data-ethernet-for="pose_data">
+                  <label class="field-select">
+                    <span class="field-select-label">Dispositivo Ethernet</span>
+                    <select class="select-styled export-eth-device" data-stream="pose_data" disabled>
+                      <option value="">Escanea dispositivos primero</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+
+              <article class="export-stream-card" data-stream="audio_data">
+                <div class="export-stream-head">
+                  <span class="export-stream-icon" aria-hidden="true">♫</span>
+                  <div class="export-stream-copy">
+                    <h4>Audio</h4>
+                    <p>Capturas de micrófonos Bluetooth emparejados.</p>
+                  </div>
+                </div>
+                <fieldset class="export-dest-fieldset">
+                  <legend class="sr-only">Destino audio</legend>
+                  <div class="export-dest-options">
+                    <label class="export-dest-option"><input type="radio" name="export_audio_data" value="local" checked /><span>Local</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_audio_data" value="server" /><span>Servidor NILO</span></label>
+                    <label class="export-dest-option"><input type="radio" name="export_audio_data" value="ethernet" /><span>Ethernet</span></label>
+                  </div>
+                </fieldset>
+                <div class="export-ethernet-row hidden" data-ethernet-for="audio_data">
+                  <label class="field-select">
+                    <span class="field-select-label">Dispositivo Ethernet</span>
+                    <select class="select-styled export-eth-device" data-stream="audio_data" disabled>
+                      <option value="">Escanea dispositivos primero</option>
+                    </select>
+                  </label>
+                </div>
+              </article>
+            </div>
+
+            <div id="mon-export-ethernet-panel" class="export-ethernet-panel hidden">
+              <div class="export-ethernet-panel-head">
+                <div>
+                  <h4>Dispositivos Ethernet en la red</h4>
+                  <p class="hint">Escanea la red local para elegir destinos de volcado por cable.</p>
+                </div>
+                <button type="button" id="mon-export-eth-scan" class="btn secondary">Escanear red</button>
+              </div>
+              <div id="mon-export-eth-progress" class="progress-wrap hidden">
+                <div class="progress-label">Buscando dispositivos en la red…</div>
+                <div class="progress-bar indeterminate"><span></span></div>
+              </div>
+              <p id="mon-export-eth-status" class="hint hidden"></p>
+              <ul id="mon-export-eth-list" class="export-eth-device-list"></ul>
+            </div>
+
+            <div class="export-form-foot">
+              <span class="export-draft-badge">Borrador — pendiente de implementación</span>
+              <button type="submit" class="btn primary">Guardar volcado</button>
+            </div>
           </form>
         </div>
 
@@ -403,6 +593,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

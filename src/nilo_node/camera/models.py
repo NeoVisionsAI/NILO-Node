@@ -70,4 +70,4 @@ class CameraStatus(BaseModel):
     available_devices: list[CameraDeviceInfo] = Field(default_factory=list)
     last_error: str | None = None
     last_preview_error: str | None = None
-    depthai_available: bool = False
+    preview_synthetic: bool = False

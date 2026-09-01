@@ -227,7 +227,7 @@ apply_node_credentials() {
 
 up_ap() {
   load_env
-  configure_node_credentials
+  apply_node_credentials
   load_env
 
   local sta
