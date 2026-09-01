@@ -5,6 +5,7 @@ const TITLES = {
   wifi: "WiFi",
   camera: "Cámara",
   bluetooth: "Audio inalámbrico",
+  monitoring: "Monitorización",
   mqtt: "MQTT",
 };
 
@@ -18,6 +19,8 @@ const CAM_STATE_LABELS = {
 const $ = (id) => document.getElementById(id);
 
 let loadingCount = 0;
+let camStatusCache = null;
+let dashboardCache = null;
 
 function authHeaders() {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -156,6 +159,9 @@ function showTab(name) {
   if (name === "camera") {
     loadCameraStatus({ silent: true }).catch(() => {});
   }
+  if (name === "monitoring") {
+    loadMonitoringTab({ silent: true }).catch(() => {});
+  }
   if (name === "bluetooth") {
     loadBluetoothTab({ silent: true }).catch(() => {});
   }
@@ -195,6 +201,21 @@ async function saveSettings(section, patch, label) {
   });
 }
 
+function isoToDatetimeLocal(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function datetimeLocalToIso(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 async function loadSettingsForms() {
   const data = await api("/api/v1/setup/settings", { silent: true });
   const saved = data.settings || {};
@@ -203,11 +224,23 @@ async function loadSettingsForms() {
     wifi: { ...data.live.wifi, ...saved.wifi },
     bluetooth: { ...data.live.bluetooth, ...saved.bluetooth },
     mqtt: { ...data.live.mqtt, ...saved.mqtt },
+    monitoring: { ...(saved.monitoring || {}) },
   };
   fillForm($("camera-form"), merged.camera);
   fillForm($("wifi-form"), merged.wifi);
   fillForm($("bt-form"), merged.bluetooth);
   fillForm($("mqtt-form"), merged.mqtt);
+  if ($("monitoring-form")) {
+    const mon = { ...merged.monitoring };
+    if (mon.window_start) mon.window_start = isoToDatetimeLocal(mon.window_start);
+    if (mon.window_end) mon.window_end = isoToDatetimeLocal(mon.window_end);
+    fillForm($("monitoring-form"), mon);
+    toggleMonitoringWindowFields(mon.schedule_mode || "always");
+  }
+  if ($("monitoring-model-form")) {
+    fillForm($("monitoring-model-form"), merged.monitoring);
+  }
+  return merged;
 }
 
 function statCard(label, value, cls = "") {
@@ -221,13 +254,56 @@ function wifiStateLabel(wifi) {
   return "Parado";
 }
 
+function updateDashboardHero(d) {
+  const icon = $("dash-cam-icon");
+  const label = $("dash-cam-label");
+  const hint = $("dash-cam-hint");
+  const state = d.camera?.connection_state || "disconnected";
+  if (icon) icon.className = `dash-cam-icon ${state}`;
+  if (label) label.textContent = `Cámara ${CAM_STATE_LABELS[state] || state}`.replace("…", "");
+  if (hint) {
+    if (state === "connected") {
+      hint.textContent = d.camera.connected_device_id
+        ? `Dispositivo ${d.camera.connected_device_id}`
+        : "OAK conectada";
+    } else if (state === "error") {
+      hint.textContent = d.camera.last_error || "Revisa la conexión PoE/USB";
+    } else {
+      hint.textContent = "Conecta la OAK desde la pestaña Cámara";
+    }
+  }
+  if ($("dash-temp")) {
+    $("dash-temp").textContent = d.system?.temperature_label || "—";
+  }
+  if ($("dash-uptime")) {
+    $("dash-uptime").textContent = d.system?.uptime_human || "—";
+  }
+}
+
+function renderMqttChannel(d) {
+  const el = $("mqtt-channel");
+  if (!el) return;
+  const topic = d.mqtt?.subscribe_topic || `nilo/node:${d.node_short_id || ""}`;
+  const events = d.mqtt?.events_topic || `${topic}/events`;
+  el.innerHTML = [
+    ["Canal comandos", topic],
+    ["Canal eventos", events],
+    ["ID nodo (8)", d.node_short_id || "—"],
+    ["Plantilla", d.mqtt?.topic_template || "nilo/node:{node_short_id}"],
+  ]
+    .map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`)
+    .join("");
+}
+
 async function loadDashboard(options = {}) {
   const { silent = false } = options;
   const d = await api("/api/v1/setup/dashboard", {
     silent,
     successMessage: silent ? null : "Panel actualizado",
   });
-  $("node-id").textContent = d.node_id;
+  dashboardCache = d;
+  $("node-id").textContent = d.node_short_id || d.node_id;
+  updateDashboardHero(d);
 
   const camCls =
     d.camera.connection_state === "connected"
@@ -243,6 +319,7 @@ async function loadDashboard(options = {}) {
     statCard("WiFi AP", wifiActive ? d.wifi.ssid : "Parado", wifiActive ? "stat-ok" : "stat-warn"),
     statCard("Audio BT", `${d.bluetooth.connected_count} conectado(s)`, ""),
     statCard("MQTT", d.mqtt?.connected ? "Conectado" : "Off", d.mqtt?.connected ? "stat-ok" : "stat-off"),
+    statCard("Modelo pose", d.camera_model?.loaded ? (d.camera_model.backend || "OK") : "Sin cargar", d.camera_model?.loaded ? "stat-ok" : "stat-off"),
   ].join("");
 
   const wifiRows = [
@@ -256,9 +333,16 @@ async function loadDashboard(options = {}) {
   $("wifi-status").innerHTML = wifiRows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
 
   $("mqtt-info").textContent = JSON.stringify(d.mqtt, null, 2);
+  renderMqttChannel(d);
   if (d.mqtt?.subscribe_topic) {
     $("mqtt-example").textContent = JSON.stringify(
-      { token: "••••", action: "settings.get", request_id: "1", payload: {} },
+      {
+        topic: d.mqtt.subscribe_topic,
+        token: "••••",
+        action: "settings.get",
+        request_id: "1",
+        payload: {},
+      },
       null,
       2,
     );
@@ -293,8 +377,8 @@ function updateCamConnectionIcon(s) {
     icon.textContent = "●";
     hint.textContent =
       s.pipeline_mode === "mock"
-        ? "Modo simulación — usa Capturar frame bajo demanda"
-        : `Conectada (${s.connected_device_id || "OAK"}) — sin streaming en vivo`;
+        ? "Modo simulación — Capturar RGB o ToF bajo demanda"
+        : `Conectada (${s.connected_device_id || "OAK"}) — Capturar RGB o ToF`;
   } else if (state === "connecting") {
     icon.textContent = "◌";
     hint.textContent = "Estableciendo enlace con la cámara…";
@@ -303,11 +387,45 @@ function updateCamConnectionIcon(s) {
     hint.textContent = s.last_error || "Revisa PoE/USB e IP de la cámara";
   } else {
     icon.textContent = "○";
-    hint.textContent = "Detectar → Conectar → Capturar frame";
+    hint.textContent = "Detectar → Conectar → Capturar RGB o ToF";
   }
 }
 
+function updateCamConnectButton(s) {
+  const btn = $("cam-connect");
+  if (!btn) return;
+  const state = s.connection_state || "disconnected";
+  if (state === "connected") {
+    btn.textContent = "Refrescar";
+    btn.className = "btn secondary";
+  } else if (state === "connecting") {
+    btn.textContent = "Conectando…";
+    btn.className = "btn primary";
+    btn.disabled = true;
+    return;
+  } else {
+    btn.textContent = "Conectar";
+    btn.className = "btn primary";
+  }
+  btn.disabled = false;
+}
+
+function renderModelStatus(model) {
+  const el = $("cam-model-status");
+  if (!el || !model) return;
+  const rows = [
+    ["Cargado", model.loaded ? "Sí" : "No"],
+    ["Backend", model.backend || "—"],
+    ["Ubicación", model.placement === "device" ? "Cámara OAK" : "Nodo (PC)"],
+    ["Estado", model.message || model.last_error || "—"],
+  ];
+  el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
+  const placement = $("cam-model-placement");
+  if (placement && model.placement) placement.value = model.placement;
+}
+
 function renderCameraStatusSummary(s) {
+  camStatusCache = s;
   const state = CAM_STATE_LABELS[s.connection_state] || s.connection_state;
   const rows = [
     ["Estado", state],
@@ -316,12 +434,17 @@ function renderCameraStatusSummary(s) {
     ["Dispositivo", s.connected_device_id || "—"],
     ["Cámaras encontradas", String(s.available_devices?.length ?? 0)],
   ];
+  if (s.model?.loaded) {
+    rows.push(["Modelo cargado", `${s.model.backend} (${s.model.placement})`]);
+  }
   if (s.last_error) rows.push(["Último error", s.last_error]);
   $("cam-status-summary").innerHTML = rows
     .map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`)
     .join("");
 
   updateCamConnectionIcon(s);
+  updateCamConnectButton(s);
+  renderModelStatus(s.model);
 
   if (s.connection_state === "connected") {
     setCamBanner(
@@ -369,7 +492,7 @@ async function showPreviewFromResponse(res, { notify = false, message = "Frame c
   return false;
 }
 
-function clearCameraPreview(message = "Sin captura — conecta la cámara y pulsa «Capturar frame»") {
+function clearCameraPreview(message = "Sin captura — conecta la cámara y pulsa «Capturar RGB» o «Capturar ToF»") {
   const img = $("cam-preview");
   const ph = $("cam-preview-placeholder");
   if (img?.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
@@ -390,6 +513,18 @@ async function loadCameraStatus(options = {}) {
   $("cam-status").textContent = JSON.stringify(s, null, 2);
   renderCameraStatusSummary(s);
   return s;
+}
+
+function toggleMonitoringWindowFields(mode) {
+  const wrap = $("mon-window-fields");
+  if (wrap) wrap.classList.toggle("hidden", mode !== "fixed_window");
+}
+
+async function loadMonitoringTab(options = {}) {
+  const merged = await loadSettingsForms();
+  const mon = merged.monitoring || {};
+  $("monitoring-summary").textContent = JSON.stringify(mon, null, 2);
+  toggleMonitoringWindowFields(mon.schedule_mode || "always");
 }
 
 $("login-form").addEventListener("submit", async (e) => {
@@ -493,42 +628,56 @@ $("cam-discover").addEventListener("click", async () => {
 });
 
 $("cam-connect").addEventListener("click", async () => {
+  const btn = $("cam-connect");
   try {
-    const s = await api("/api/v1/camera/connect", {
-      method: "POST",
-      body: "{}",
-    });
-    if (s.connection_state === "error") {
-      showToast(s.last_error || "Error al conectar", "error");
-      setCamBanner(s.last_error || "Error al conectar", "err");
-    } else if (s.connection_state === "connected") {
-      showToast(
-        s.pipeline_mode === "mock" ? "Conectado (modo mock)" : "Cámara conectada correctamente",
-        "ok",
-      );
+    if (camStatusCache?.connection_state === "connected") {
+      await api("/api/v1/camera/refresh", {
+        method: "POST",
+        body: "{}",
+        successMessage: "Estado actualizado",
+      });
+    } else {
+      btn.disabled = true;
+      btn.textContent = "Conectando…";
+      const s = await api("/api/v1/camera/connect", {
+        method: "POST",
+        body: "{}",
+      });
+      if (s.connection_state === "error") {
+        showToast(s.last_error || "Error al conectar", "error");
+        setCamBanner(s.last_error || "Error al conectar", "err");
+      } else if (s.connection_state === "connected") {
+        showToast(
+          s.pipeline_mode === "mock" ? "Conectado (modo mock)" : "Cámara conectada correctamente",
+          "ok",
+        );
+      }
     }
     await loadCameraStatus({ silent: true });
   } catch (err) {
     setCamBanner(`Conectar: ${err.message}`, "err");
+  } finally {
+    if (camStatusCache) updateCamConnectButton(camStatusCache);
   }
 });
 
-$("cam-snapshot").addEventListener("click", async () => {
+async function captureSnapshot(stream, label) {
   try {
-    const res = await apiRequest("/api/v1/camera/snapshot", {
+    const res = await apiRequest(`/api/v1/camera/snapshot?stream=${stream}`, {
       method: "POST",
       jsonBody: false,
-      successMessage: "Frame capturado",
+      successMessage: `${label} capturado`,
     });
-    const ok = await showPreviewFromResponse(res, { notify: false });
-    if (ok) {
-      setCamBanner("Frame capturado correctamente", "ok");
-    }
+    const ok = await showPreviewFromResponse(res, { notify: false, message: `${label} capturado` });
+    if (ok) setCamBanner(`${label} capturado correctamente`, "ok");
     await loadCameraStatus({ silent: true });
   } catch (err) {
-    setCamBanner(`Captura: ${err.message}`, "err");
+    setCamBanner(`Captura ${label}: ${err.message}`, "err");
   }
-});
+}
+
+$("cam-snapshot-rgb").addEventListener("click", () => captureSnapshot("rgb", "Frame RGB"));
+$("cam-snapshot-tof").addEventListener("click", () => captureSnapshot("tof", "Frame ToF"));
 
 $("cam-disconnect").addEventListener("click", async () => {
   await api("/api/v1/camera/disconnect", {
@@ -539,7 +688,42 @@ $("cam-disconnect").addEventListener("click", async () => {
   await loadCameraStatus({ silent: true });
 });
 
-$("cam-pose-test").addEventListener("click", async () => {
+$("cam-model-load").addEventListener("click", async () => {
+  try {
+    const backend =
+      $("camera-form").elements.pose_backend?.value ||
+      dashboardCache?.camera?.pose_backend ||
+      "mediapipe";
+    const placement = $("cam-model-placement")?.value || "host";
+    const r = await api("/api/v1/camera/model/load", {
+      method: "POST",
+      body: JSON.stringify({ backend, placement }),
+      successMessage: "Modelo cargado",
+    });
+    renderModelStatus(r);
+    await loadCameraStatus({ silent: true });
+    await saveSettings("camera", { pose_backend: backend }, "Backend de pose");
+  } catch (err) {
+    setCamBanner(`Cargar modelo: ${err.message}`, "err");
+  }
+});
+
+$("cam-model-unload").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/v1/camera/model/unload", {
+      method: "POST",
+      body: "{}",
+      successMessage: "Modelo descargado",
+    });
+    renderModelStatus(r);
+    $("cam-model-test-details")?.classList.add("hidden");
+    await loadCameraStatus({ silent: true });
+  } catch (err) {
+    setCamBanner(`Quitar modelo: ${err.message}`, "err");
+  }
+});
+
+$("cam-model-test").addEventListener("click", async () => {
   try {
     const r = await api("/api/v1/camera/pose-test", {
       method: "POST",
@@ -551,21 +735,48 @@ $("cam-pose-test").addEventListener("click", async () => {
       for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
       await showPreviewFromBlob(new Blob([bytes], { type: "image/jpeg" }), {
         notify: false,
-        message: "Pose detectada",
+        message: "Prueba completada",
       });
     }
+    const details = { ...r };
+    delete details.annotated_jpeg_base64;
+    $("cam-model-test-json").textContent = JSON.stringify(details, null, 2);
+    $("cam-model-test-details").classList.remove("hidden");
+
     if (r.engine_available) {
       const n = r.landmarks_detected ?? 0;
+      const backend = r.model?.backend || r.engine_id || "modelo";
       const msg = r.pose_detected
-        ? `MediaPipe OK — ${n} landmarks detectados`
-        : r.message || "MediaPipe OK — sin cuerpo visible en el frame";
+        ? `${backend} OK — ${n} landmarks detectados`
+        : r.message || `${backend} OK — sin cuerpo visible en el frame`;
       showToast(msg, r.pose_detected ? "ok" : "warn");
       setCamBanner(msg, r.pose_detected ? "ok" : "warn");
     }
     await loadCameraStatus({ silent: true });
   } catch (err) {
-    setCamBanner(`MediaPipe: ${err.message}`, "err");
+    setCamBanner(`Probar modelo: ${err.message}`, "err");
   }
+});
+
+$("mon-schedule-mode")?.addEventListener("change", (e) => {
+  toggleMonitoringWindowFields(e.target.value);
+});
+
+$("monitoring-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const patch = formToPatch(e.target);
+  patch.enabled = e.target.elements.enabled.checked;
+  if (patch.window_start) patch.window_start = datetimeLocalToIso(patch.window_start);
+  if (patch.window_end) patch.window_end = datetimeLocalToIso(patch.window_end);
+  await saveSettings("monitoring", patch, "Monitorización");
+  await loadMonitoringTab({ silent: true });
+});
+
+$("monitoring-model-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const patch = formToPatch(e.target);
+  await saveSettings("monitoring", patch, "Modelo de monitorización");
+  await loadMonitoringTab({ silent: true });
 });
 
 const BT_RECORDING_MODE_LABELS = {

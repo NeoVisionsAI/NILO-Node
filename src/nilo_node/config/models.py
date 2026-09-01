@@ -173,8 +173,8 @@ class MqttConfig(BaseModel):
     username: str = ""
     password: str = ""
     use_tls: bool = True
-    topic_template: str = "nilo/node/{node_id}"
-    events_topic_template: str = "nilo/node/{node_id}/events"
+    topic_template: str = "nilo/node:{node_short_id}"
+    events_topic_template: str = "nilo/node:{node_short_id}/events"
     require_message_token: bool = True
     reconnect_interval_sec: int = 10
     qos: int = 1

@@ -14,6 +14,7 @@ from nilo_node.camera.models import (
     CameraStatus,
     CaptureFlags,
 )
+from nilo_node.camera.model_runtime import CameraModelRuntime
 from nilo_node.camera.pipeline import ChunkCaptureSession, build_pipeline
 from nilo_node.config.models import AppConfig, CameraConfig
 from nilo_node.monitoring.models import Campaign
@@ -44,6 +45,39 @@ class CameraManager:
         self._recording = False
         self._watchdog_task: asyncio.Task[None] | None = None
         self._last_preview_error: str | None = None
+        models_root = Path(config.storage.base_path) / "models" / "pose"
+        self._model_runtime = CameraModelRuntime(models_root)
+
+    def get_model_state(self) -> dict[str, object]:
+        return self._model_runtime.state.to_dict()
+
+    async def load_pose_model(
+        self,
+        backend: str,
+        *,
+        placement: str = "host",
+    ) -> dict[str, object]:
+        async with self._lock:
+            result = await self._model_runtime.load(
+                backend,  # type: ignore[arg-type]
+                placement=placement,  # type: ignore[arg-type]
+            )
+            if backend in ("mediapipe", "yolo"):
+                self._camera_cfg.pose_backend = backend  # type: ignore[assignment]
+            return result
+
+    async def unload_pose_model(self) -> dict[str, object]:
+        async with self._lock:
+            return await self._model_runtime.unload()
+
+    async def test_loaded_model(self) -> dict[str, object]:
+        state = self._model_runtime.state
+        if not state.loaded:
+            return {"ok": False, "error": "No hay modelo cargado — pulsa «Cargar modelo» primero"}
+        result = await self.test_pose()
+        result["model"] = state.to_dict()
+        result["placement"] = state.placement
+        return result
 
     @property
     def last_preview_error(self) -> str | None:
@@ -100,8 +134,14 @@ class CameraManager:
             self._last_preview_error = "OpenCV (cv2) no disponible en el contenedor"
             return None
 
-    async def get_preview_jpeg(self, *, wait_for_frame: bool = True) -> bytes | None:
+    async def get_preview_jpeg(
+        self,
+        *,
+        wait_for_frame: bool = True,
+        stream: str = "auto",
+    ) -> bytes | None:
         self._last_preview_error = None
+        stream = stream if stream in ("auto", "rgb", "tof") else "auto"
 
         if self._state != CameraConnectionState.CONNECTED:
             self._last_preview_error = "Cámara no conectada — pulsa Conectar en el portal"
@@ -110,12 +150,14 @@ class CameraManager:
         pipeline = self._pipeline
 
         if getattr(pipeline, "mode", None) == "mock":
-            return self._synthetic_preview_frame("Mock camera preview")
+            label = "Mock RGB" if stream != "tof" else "Mock ToF"
+            return self._synthetic_preview_frame(label)
 
         if getattr(pipeline, "mode", None) == "depthai":
             if getattr(pipeline, "_use_synthetic", False):
                 device = getattr(pipeline, "_device_id", None) or "OAK"
-                return self._synthetic_preview_frame(f"OAK {device} — modo sintético (sin graph)")
+                label = f"OAK {device} — sintético ({stream})"
+                return self._synthetic_preview_frame(label)
 
             session = getattr(pipeline, "_session", None)
             if session is None:
@@ -127,17 +169,24 @@ class CameraManager:
             for attempt in range(attempts):
                 bundle = await asyncio.to_thread(session.poll)
                 last_bundle = bundle
-                if bundle is not None and bundle.rgb is not None:
+                if bundle is None:
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(0.12)
+                    continue
+
+                if stream in ("auto", "rgb") and bundle.rgb is not None:
                     jpeg = self._encode_jpeg(bundle.rgb)
                     if jpeg:
                         return jpeg
-                if bundle is not None and bundle.depth is not None:
+
+                if stream in ("auto", "tof") and bundle.depth is not None:
                     bgr = self._depth_to_bgr(bundle.depth)
                     jpeg = self._encode_jpeg(bgr)
                     if jpeg:
-                        if bundle.rgb is None:
+                        if stream == "tof" or bundle.rgb is None:
                             self._last_preview_error = None
                         return jpeg
+
                 if attempt + 1 < attempts:
                     await asyncio.sleep(0.12)
 
@@ -147,6 +196,10 @@ class CameraManager:
                 )
             elif not getattr(session, "is_open", True):
                 self._last_preview_error = "Enlace DepthAI cerrado — pulsa Conectar de nuevo"
+            elif stream == "rgb":
+                self._last_preview_error = "Sin frame RGB disponible"
+            elif stream == "tof":
+                self._last_preview_error = "Sin frame ToF/disponible"
             else:
                 self._last_preview_error = (
                     "Cámara conectada pero sin frames RGB/ToF aún — "
@@ -169,7 +222,7 @@ class CameraManager:
         from nilo_node.camera.pose.factory import build_pose_engine
         from nilo_node.camera.pose.mediapipe_engine import draw_pose_landmarks
 
-        jpeg = await self.get_preview_jpeg(wait_for_frame=True)
+        jpeg = await self.get_preview_jpeg(wait_for_frame=True, stream="rgb")
         if jpeg is None:
             return {
                 "ok": False,

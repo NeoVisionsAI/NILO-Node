@@ -137,8 +137,8 @@ mqtt:
   username: "${NILO_MQTT_USERNAME}"
   password: "${NILO_MQTT_PASSWORD}"
   use_tls: true
-  topic_template: "nilo/node/{node_id}"
-  events_topic_template: "nilo/node/{node_id}/events"
+  topic_template: "nilo/node:{node_short_id}"
+  events_topic_template: "nilo/node:{node_short_id}/events"
   require_message_token: true
   reconnect_interval_sec: 10
   qos: 1

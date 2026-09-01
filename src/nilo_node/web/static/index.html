@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2" />
+  <link rel="stylesheet" href="style.css?v=3" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -59,6 +59,7 @@
         <button data-tab="wifi" class="nav-item"><span class="ico">⌂</span> WiFi</button>
         <button data-tab="camera" class="nav-item"><span class="ico">▣</span> Cámara</button>
         <button data-tab="bluetooth" class="nav-item"><span class="ico">♫</span> Audio BT</button>
+        <button data-tab="monitoring" class="nav-item"><span class="ico">◷</span> Monitorización</button>
         <button data-tab="mqtt" class="nav-item"><span class="ico">⇄</span> MQTT</button>
       </nav>
       <div class="sidebar-foot">
@@ -77,14 +78,30 @@
       </header>
 
       <section id="tab-dashboard" class="page">
-        <div id="dashboard-cards" class="grid stats"></div>
-        <div class="card">
-          <h3>Accesos rápidos</h3>
-          <div class="quick-actions">
-            <button class="btn secondary" data-goto="camera">Configurar cámara</button>
-            <button class="btn secondary" data-goto="wifi">Ver WiFi</button>
-            <button class="btn secondary" id="dash-refresh">Actualizar</button>
+        <div class="dashboard-hero card">
+          <div id="dash-cam-icon" class="dash-cam-icon disconnected" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true">
+              <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
+            </svg>
           </div>
+          <div class="dash-hero-body">
+            <div id="dash-cam-label" class="dash-cam-label">Cámara desconectada</div>
+            <div id="dash-cam-hint" class="dash-cam-hint">Conecta la OAK desde la pestaña Cámara</div>
+          </div>
+          <div class="dash-hero-metrics">
+            <div class="dash-metric">
+              <span class="dash-metric-label">Temperatura</span>
+              <span id="dash-temp" class="dash-metric-value">—</span>
+            </div>
+            <div class="dash-metric">
+              <span class="dash-metric-label">Encendido</span>
+              <span id="dash-uptime" class="dash-metric-value">—</span>
+            </div>
+          </div>
+        </div>
+        <div id="dashboard-cards" class="grid stats"></div>
+        <div class="row dash-actions">
+          <button class="btn secondary" id="dash-refresh">Actualizar panel</button>
         </div>
       </section>
 
@@ -116,21 +133,43 @@
               <div id="cam-connection-icon" class="cam-icon disconnected" aria-hidden="true">○</div>
               <div>
                 <div id="cam-connection-label" class="cam-icon-label">Desconectada</div>
-                <div id="cam-connection-hint" class="cam-icon-hint">Detectar → Conectar → Capturar frame</div>
+                <div id="cam-connection-hint" class="cam-icon-hint">Detectar → Conectar → Capturar RGB o ToF</div>
               </div>
             </div>
             <h4 class="cam-subtitle">Última captura</h4>
             <div class="preview-wrap">
               <img id="cam-preview" alt="Última captura" class="hidden" />
-              <div id="cam-preview-placeholder" class="preview-ph">Sin captura — conecta la cámara y pulsa «Capturar frame»</div>
+              <div id="cam-preview-placeholder" class="preview-ph">Sin captura — conecta la cámara y pulsa «Capturar RGB» o «Capturar ToF»</div>
             </div>
             <div class="row">
               <button id="cam-discover" class="btn secondary">Detectar</button>
               <button id="cam-connect" class="btn primary">Conectar</button>
-              <button id="cam-snapshot" class="btn secondary">Capturar frame</button>
-              <button id="cam-pose-test" class="btn secondary">Probar MediaPipe</button>
+              <button id="cam-snapshot-rgb" class="btn secondary">Capturar RGB</button>
+              <button id="cam-snapshot-tof" class="btn secondary">Capturar ToF</button>
               <button id="cam-disconnect" class="btn ghost">Desconectar</button>
             </div>
+          </div>
+          <div class="card">
+            <h3>Modelo de pose (OpenVINO)</h3>
+            <p class="hint">Prepara y carga el backend seleccionado en el nodo o en la cámara OAK.</p>
+            <div id="cam-model-status" class="kv"></div>
+            <div class="row">
+              <label class="inline-select">Ubicación
+                <select id="cam-model-placement">
+                  <option value="host">En el nodo (PC)</option>
+                  <option value="device">En la cámara OAK</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <button id="cam-model-load" class="btn primary">Cargar modelo</button>
+              <button id="cam-model-test" class="btn secondary">Probar</button>
+              <button id="cam-model-unload" class="btn ghost">Quitar modelo</button>
+            </div>
+            <details id="cam-model-test-details" class="code-details hidden">
+              <summary>Resultado de la prueba</summary>
+              <pre id="cam-model-test-json" class="code"></pre>
+            </details>
           </div>
           <div class="card">
             <h3>Parámetros OAK (PoE)</h3>
@@ -226,7 +265,56 @@
         </div>
       </section>
 
+      <section id="tab-monitoring" class="page hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Intervalos de monitorización</h3>
+            <form id="monitoring-form" class="form">
+              <label class="check"><input name="enabled" type="checkbox" /> Monitorización activa</label>
+              <label>Modo
+                <select name="schedule_mode" id="mon-schedule-mode">
+                  <option value="always">24/7 — desde ahora hasta siempre</option>
+                  <option value="fixed_window">Ventana personalizada</option>
+                </select>
+              </label>
+              <div id="mon-window-fields" class="hidden">
+                <label>Inicio del intervalo <input name="window_start" type="datetime-local" /></label>
+                <label>Fin del intervalo <input name="window_end" type="datetime-local" /></label>
+                <label>Hora diaria inicio <input name="daily_start_time" type="time" /></label>
+                <label>Hora diaria fin <input name="daily_end_time" type="time" /></label>
+              </div>
+              <button type="submit" class="btn primary">Guardar monitorización</button>
+            </form>
+          </div>
+          <div class="card">
+            <h3>Modelo durante monitorización</h3>
+            <p class="hint">Elige el backend y si la inferencia corre en el nodo o en la cámara.</p>
+            <form id="monitoring-model-form" class="form">
+              <label>Backend pose
+                <select name="pose_backend">
+                  <option value="none">Sin modelo</option>
+                  <option value="mediapipe">MediaPipe</option>
+                  <option value="yolo">YOLO</option>
+                </select>
+              </label>
+              <label>Ubicación
+                <select name="model_placement">
+                  <option value="host">En el nodo (PC)</option>
+                  <option value="device">En la cámara OAK</option>
+                </select>
+              </label>
+              <button type="submit" class="btn primary">Guardar modelo</button>
+            </form>
+            <pre id="monitoring-summary" class="code"></pre>
+          </div>
+        </div>
+      </section>
+
       <section id="tab-mqtt" class="page hidden">
+        <div class="card">
+          <h3>Canal MQTT</h3>
+          <div id="mqtt-channel" class="kv"></div>
+        </div>
         <div class="card">
           <h3>Estado MQTT</h3>
           <pre id="mqtt-info" class="code"></pre>
@@ -250,6 +338,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

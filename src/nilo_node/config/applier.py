@@ -71,5 +71,8 @@ class SettingsApplier:
                     setattr(self._config.mqtt, key, value)
             applied["mqtt"] = settings.mqtt
 
+        if settings.monitoring:
+            applied["monitoring"] = settings.monitoring
+
         logger.info("Applied runtime settings: %s", list(applied.keys()))
         return applied

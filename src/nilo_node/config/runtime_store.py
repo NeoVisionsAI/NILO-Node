@@ -23,6 +23,7 @@ class RuntimeSettings(BaseModel):
     wifi: dict[str, Any] = Field(default_factory=dict)
     bluetooth: dict[str, Any] = Field(default_factory=dict)
     mqtt: dict[str, Any] = Field(default_factory=dict)
+    monitoring: dict[str, Any] = Field(default_factory=dict)
     updated_at: str | None = None
 
 
@@ -65,7 +66,7 @@ class RuntimeSettingsStore:
     def merge_and_save(self, patch: dict[str, Any]) -> RuntimeSettings:
         current = self.load()
         data = current.model_dump()
-        for section in ("camera", "wifi", "bluetooth", "mqtt"):
+        for section in ("camera", "wifi", "bluetooth", "mqtt", "monitoring"):
             if section in patch and isinstance(patch[section], dict):
                 section_data = dict(data.get(section) or {})
                 section_data.update({k: v for k, v in patch[section].items() if v is not None})

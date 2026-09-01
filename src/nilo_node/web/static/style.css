@@ -175,6 +175,38 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .card h3 { margin: 0 0 1rem; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
 
+.dashboard-hero {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 1.25rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.dash-cam-icon {
+  width: 4.5rem; height: 4.5rem; border-radius: 16px;
+  display: grid; place-items: center;
+  border: 2px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+}
+.dash-cam-icon.connected { color: #2ecc71; border-color: #2ecc71; background: rgba(46, 204, 113, 0.1); }
+.dash-cam-icon.connecting { color: #c9a227; border-color: #c9a227; }
+.dash-cam-icon.error { color: #e74c3c; border-color: #e74c3c; }
+.dash-cam-label { font-size: 1.15rem; font-weight: 700; }
+.dash-cam-hint { font-size: 0.85rem; color: var(--muted); margin-top: 0.2rem; }
+.dash-hero-metrics { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.dash-metric { display: flex; flex-direction: column; gap: 0.15rem; min-width: 5.5rem; }
+.dash-metric-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.dash-metric-value { font-size: 1.1rem; font-weight: 700; }
+.dash-actions { margin-top: 0.5rem; }
+.inline-select { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+.inline-select select { margin-left: 0.25rem; }
+
+@media (max-width: 720px) {
+  .dashboard-hero { grid-template-columns: 1fr; }
+  .dash-hero-metrics { margin-top: 0.5rem; }
+}
+
 .stat-value { font-size: 1.35rem; font-weight: 700; margin: 0.25rem 0; }
 .stat-label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .stat-ok { color: var(--success); }

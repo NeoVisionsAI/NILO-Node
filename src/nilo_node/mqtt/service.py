@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel
 
 from nilo_node.config.models import AppConfig, MqttConfig
+from nilo_node.util.node_id import node_short_id
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,18 @@ class MqttService:
         return self.config.mqtt
 
     def subscribe_topic(self) -> str:
-        return self.mqtt.topic_template.format(node_id=self.node_id)
+        short = node_short_id(self.node_id)
+        return self.mqtt.topic_template.format(
+            node_id=self.node_id,
+            node_short_id=short,
+        )
 
     def events_topic(self) -> str:
-        return self.mqtt.events_topic_template.format(node_id=self.node_id)
+        short = node_short_id(self.node_id)
+        return self.mqtt.events_topic_template.format(
+            node_id=self.node_id,
+            node_short_id=short,
+        )
 
     def register_handler(self, action: str, handler: CommandHandler) -> None:
         self._handlers[action] = handler

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
 from nilo_node.api.deps import require_auth
@@ -28,6 +28,11 @@ class CameraConfigUpdate(BaseModel):
     pose_backend: Literal["mediapipe", "yolo", "custom"] | None = None
     auto_connect: bool | None = None
     mock_when_unavailable: bool | None = None
+
+
+class ModelLoadRequest(BaseModel):
+    backend: Literal["mediapipe", "yolo"] | None = None
+    placement: Literal["host", "device"] = "host"
 
 
 def create_camera_router(
@@ -57,13 +62,22 @@ def create_camera_router(
         status_obj = await camera.disconnect()
         return status_obj.model_dump()
 
-    @router.get("/status", dependencies=[auth])
-    async def camera_status() -> dict[str, Any]:
+    @router.post("/refresh", dependencies=[auth])
+    async def refresh_camera() -> dict[str, Any]:
+        """Refresh connection status (no disconnect)."""
         return camera.get_status().model_dump()
 
+    @router.get("/status", dependencies=[auth])
+    async def camera_status() -> dict[str, Any]:
+        status_data = camera.get_status().model_dump()
+        status_data["model"] = camera.get_model_state()
+        return status_data
+
     @router.get("/preview", dependencies=[auth])
-    async def camera_preview() -> Response:
-        jpeg = await camera.get_preview_jpeg(wait_for_frame=False)
+    async def camera_preview(
+        stream: Literal["auto", "rgb", "tof"] = Query(default="auto"),
+    ) -> Response:
+        jpeg = await camera.get_preview_jpeg(wait_for_frame=False, stream=stream)
         if jpeg is None:
             cam_status = camera.get_status()
             detail = (
@@ -78,9 +92,11 @@ def create_camera_router(
         return Response(content=jpeg, media_type="image/jpeg")
 
     @router.post("/snapshot", dependencies=[auth])
-    async def camera_snapshot() -> Response:
-        """Capture a single JPEG frame (waits up to ~3s for first frame)."""
-        jpeg = await camera.get_preview_jpeg(wait_for_frame=True)
+    async def camera_snapshot(
+        stream: Literal["auto", "rgb", "tof"] = Query(default="rgb"),
+    ) -> Response:
+        """Capture a single JPEG frame (rgb or tof colormap)."""
+        jpeg = await camera.get_preview_jpeg(wait_for_frame=True, stream=stream)
         if jpeg is None:
             cam_status = camera.get_status()
             detail = (
@@ -97,18 +113,38 @@ def create_camera_router(
     @router.post("/pose-test", dependencies=[auth])
     async def camera_pose_test() -> dict[str, Any]:
         """Capture one frame and run pose inference (no live streaming)."""
-        result = await camera.test_pose()
-        if not result.get("frame_available", True):
+        result = await camera.test_loaded_model()
+        if not result.get("frame_available", True) and result.get("error"):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(result.get("error") or "No hay frame disponible"),
+                detail=str(result["error"]),
             )
-        if not result.get("engine_available"):
+        if result.get("frame_available") and not result.get("engine_available"):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(result.get("error") or "Motor de pose no disponible"),
             )
         return result
+
+    @router.get("/model", dependencies=[auth])
+    async def camera_model_status() -> dict[str, Any]:
+        return camera.get_model_state()
+
+    @router.post("/model/load", dependencies=[auth])
+    async def camera_model_load(body: ModelLoadRequest) -> dict[str, Any]:
+        backend = body.backend or camera.get_status().model_dump().get("pose_backend")
+        if backend not in ("mediapipe", "yolo"):
+            backend = config.camera.pose_backend
+        if backend not in ("mediapipe", "yolo"):
+            raise HTTPException(status_code=422, detail="backend debe ser mediapipe o yolo")
+        try:
+            return await camera.load_pose_model(backend, placement=body.placement)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.post("/model/unload", dependencies=[auth])
+    async def camera_model_unload() -> dict[str, Any]:
+        return await camera.unload_pose_model()
 
     @router.patch("/config", dependencies=[auth])
     async def update_camera_config(body: CameraConfigUpdate) -> dict[str, Any]:

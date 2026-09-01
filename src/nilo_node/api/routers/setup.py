@@ -16,6 +16,7 @@ from nilo_node.config.models import AppConfig
 from nilo_node.config.runtime_store import RuntimeSettings, RuntimeSettingsStore
 from nilo_node.mqtt.service import MqttService
 from nilo_node.network.wifi_manager import WifiApManager
+from nilo_node.system.metrics import system_metrics
 from nilo_node.util.node_id import node_short_id, verify_setup_login
 
 
@@ -62,6 +63,19 @@ class MqttSettingsPatch(BaseModel):
     broker_port: int | None = Field(default=None, ge=1, le=65535)
     username: str | None = None
     password: str | None = None
+    topic_template: str | None = None
+    events_topic_template: str | None = None
+
+
+class MonitoringSettingsPatch(BaseModel):
+    enabled: bool | None = None
+    schedule_mode: Literal["always", "fixed_window"] | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    daily_start_time: str | None = None
+    daily_end_time: str | None = None
+    pose_backend: Literal["mediapipe", "yolo", "none"] | None = None
+    model_placement: Literal["host", "device"] | None = None
 
 
 class SettingsPatchRequest(BaseModel):
@@ -69,6 +83,7 @@ class SettingsPatchRequest(BaseModel):
     wifi: WifiSettingsPatch | None = None
     bluetooth: BluetoothSettingsPatch | None = None
     mqtt: MqttSettingsPatch | None = None
+    monitoring: MonitoringSettingsPatch | None = None
 
 
 def create_setup_router(
@@ -117,10 +132,16 @@ def create_setup_router(
         bt_status = bluetooth.get_status()
         wifi_status = wifi.get_status()
         mqtt_status = mqtt.get_status().model_dump(mode="json") if mqtt else None
+        if mqtt_status is not None:
+            mqtt_status["topic_template"] = config.mqtt.topic_template
+            mqtt_status["events_topic_template"] = config.mqtt.events_topic_template
         settings = settings_store.load()
         return {
             "node_id": node_id,
+            "node_short_id": node_short_id(node_id),
+            "system": system_metrics(),
             "camera": cam_status.model_dump(),
+            "camera_model": camera.get_model_state(),
             "bluetooth": bt_status.model_dump(mode="json"),
             "wifi": wifi_status.model_dump(mode="json"),
             "mqtt": mqtt_status,
@@ -152,6 +173,8 @@ def create_setup_router(
             patch["bluetooth"] = body.bluetooth.model_dump(exclude_none=True)
         if body.mqtt is not None:
             patch["mqtt"] = body.mqtt.model_dump(exclude_none=True)
+        if body.monitoring is not None:
+            patch["monitoring"] = body.monitoring.model_dump(exclude_none=True)
         if not patch:
             return {"settings": settings_store.load().model_dump(mode="json"), "applied": {}}
 
