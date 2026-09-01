@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -64,7 +64,6 @@
       </nav>
       <div class="sidebar-foot">
         <small id="node-id"></small>
-        <button id="logout-btn" class="btn ghost full">Cerrar sesión</button>
       </div>
     </aside>
 
@@ -125,93 +124,116 @@
       </section>
 
       <section id="tab-camera" class="page hidden">
-        <div class="grid two">
-          <div class="card">
-            <h3>Cámara OAK</h3>
-            <div id="cam-banner" class="status-banner hidden"></div>
-            <div class="cam-status-panel">
-              <div id="cam-connection-icon" class="cam-icon disconnected" aria-hidden="true">○</div>
-              <div>
-                <div id="cam-connection-label" class="cam-icon-label">Desconectada</div>
-                <div id="cam-connection-hint" class="cam-icon-hint">Detectar → Conectar → Capturar RGB o ToF</div>
-              </div>
-            </div>
-            <h4 class="cam-subtitle">Última captura</h4>
-            <div class="preview-wrap">
-              <img id="cam-preview" alt="Última captura" class="hidden" />
-              <div id="cam-preview-placeholder" class="preview-ph">Sin captura — conecta la cámara y pulsa «Capturar RGB» o «Capturar ToF»</div>
-            </div>
-            <div class="row">
-              <button id="cam-discover" class="btn secondary">Detectar</button>
-              <button id="cam-connect" class="btn primary">Conectar</button>
-              <button id="cam-snapshot-rgb" class="btn secondary">Capturar RGB</button>
-              <button id="cam-snapshot-tof" class="btn secondary">Capturar ToF</button>
-              <button id="cam-disconnect" class="btn ghost">Desconectar</button>
+        <div class="subtabs" id="camera-subtabs">
+          <button type="button" class="subtab active" data-subtab="cam-panel-live">Conexión</button>
+          <button type="button" class="subtab" data-subtab="cam-panel-model">Modelo OAK</button>
+          <button type="button" class="subtab" data-subtab="cam-panel-config">Configuración</button>
+        </div>
+
+        <div id="cam-panel-live" class="subtab-panel card">
+          <div id="cam-banner" class="status-banner hidden"></div>
+          <div class="cam-status-panel">
+            <div id="cam-connection-icon" class="cam-icon disconnected" aria-hidden="true">○</div>
+            <div>
+              <div id="cam-connection-label" class="cam-icon-label">Desconectada</div>
+              <div id="cam-connection-hint" class="cam-icon-hint">Detectar → Conectar → Capturar RGB o ToF</div>
             </div>
           </div>
-          <div class="card">
-            <h3>Modelo en cámara OAK</h3>
-            <p class="hint">Carga el modelo seleccionado en la cámara (OpenVINO/blob). La inferencia en el nodo se configura en Monitorización.</p>
-            <div id="cam-model-status" class="kv"></div>
-            <div class="row">
-              <button id="cam-model-load" class="btn primary">Cargar en cámara</button>
-              <button id="cam-model-test" class="btn secondary">Comprobar</button>
-              <button id="cam-model-unload" class="btn ghost">Limpiar modelo</button>
-            </div>
-            <details id="cam-model-test-details" class="code-details hidden">
-              <summary>Resultado de la prueba</summary>
-              <pre id="cam-model-test-json" class="code"></pre>
-            </details>
+          <h4 class="cam-subtitle">Última captura</h4>
+          <div class="preview-wrap">
+            <img id="cam-preview" alt="Última captura" class="hidden" />
+            <div id="cam-preview-placeholder" class="preview-ph">Sin captura — conecta la cámara y pulsa «Capturar RGB» o «Capturar ToF»</div>
           </div>
-          <div class="card">
-            <h3>Parámetros OAK (PoE)</h3>
-            <form id="camera-form" class="form">
-              <label>IP cámara <input name="device_ip" type="text" placeholder="169.254.1.222" /></label>
-              <label>Modo
-                <select name="connection_mode">
-                  <option value="poe">PoE</option>
-                  <option value="usb">USB</option>
-                  <option value="auto">Auto</option>
-                </select>
-              </label>
-              <label>FPS RGB <input name="rgb_fps" type="number" min="1" max="60" /></label>
-              <label>FPS ToF <input name="tof_fps" type="number" min="1" max="60" /></label>
-              <label>Pose backend
-                <select name="pose_backend">
-                  <option value="mediapipe">MediaPipe</option>
-                  <option value="yolo">YOLO</option>
-                </select>
-              </label>
-              <label class="check"><input name="auto_connect" type="checkbox" /> Auto-conectar al arrancar</label>
-              <button type="submit" class="btn primary">Guardar y aplicar</button>
-            </form>
+          <div class="row">
+            <button id="cam-discover" class="btn secondary">Detectar</button>
+            <button id="cam-connect" class="btn primary">Conectar</button>
+            <button id="cam-snapshot-rgb" class="btn secondary">Capturar RGB</button>
+            <button id="cam-snapshot-tof" class="btn secondary">Capturar ToF</button>
+            <button id="cam-disconnect" class="btn ghost">Desconectar</button>
+          </div>
+          <div class="cam-record-toggles">
+            <label class="check toggle-card"><input id="cam-record-rgb" type="checkbox" /> Registrar RGB (vídeo)</label>
+            <label class="check toggle-card"><input id="cam-record-tof" type="checkbox" /> Registrar ToF (profundidad)</label>
           </div>
         </div>
-        <div class="card">
-          <h3>Estado</h3>
-          <div id="cam-status-summary" class="kv"></div>
+
+        <div id="cam-panel-model" class="subtab-panel card hidden">
+          <h3>Modelo en cámara OAK</h3>
+          <p class="hint">Selecciona el backend y cárgalo en la cámara. La inferencia en el nodo se configura en Monitorización.</p>
+          <label>Backend a cargar
+            <select id="cam-model-backend">
+              <option value="mediapipe">MediaPipe</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </label>
+          <div id="cam-model-progress-wrap" class="progress-wrap hidden">
+            <div class="progress-label">Preparando y cargando modelo…</div>
+            <div class="progress-bar indeterminate"><span></span></div>
+          </div>
+          <div id="cam-model-loaded-badge" class="model-loaded-badge hidden">Modelo cargado en OAK</div>
+          <div id="cam-model-status" class="kv"></div>
+          <div class="row">
+            <button id="cam-model-load" class="btn primary">Cargar en cámara</button>
+            <button id="cam-model-test" class="btn secondary">Comprobar</button>
+            <button id="cam-model-unload" class="btn ghost">Limpiar modelo</button>
+          </div>
+          <h4 class="cam-subtitle">Resultado de comprobación</h4>
+          <div class="preview-wrap model-test-preview">
+            <img id="cam-model-test-preview" alt="Prueba del modelo" class="hidden" />
+            <div id="cam-model-test-placeholder" class="preview-ph">Pulsa «Comprobar» tras cargar el modelo</div>
+          </div>
+          <pre id="cam-model-test-json" class="code hidden"></pre>
+        </div>
+
+        <div id="cam-panel-config" class="subtab-panel card hidden">
+          <h3>Parámetros OAK (PoE)</h3>
+          <form id="camera-form" class="form">
+            <label>IP cámara <input name="device_ip" type="text" placeholder="169.254.1.222" /></label>
+            <label>Modo
+              <select name="connection_mode">
+                <option value="poe">PoE</option>
+                <option value="usb">USB</option>
+                <option value="auto">Auto</option>
+              </select>
+            </label>
+            <label>FPS RGB <input name="rgb_fps" type="number" min="1" max="60" /></label>
+            <label>FPS ToF <input name="tof_fps" type="number" min="1" max="60" /></label>
+            <label class="check"><input name="auto_connect" type="checkbox" /> Auto-conectar al arrancar</label>
+            <button type="submit" class="btn primary">Guardar y aplicar</button>
+          </form>
           <details class="code-details">
-            <summary>Detalle técnico (JSON)</summary>
+            <summary>Estado técnico</summary>
+            <div id="cam-status-summary" class="kv"></div>
             <pre id="cam-status" class="code"></pre>
           </details>
         </div>
       </section>
 
       <section id="tab-bluetooth" class="page hidden">
+        <div class="card">
+          <h3>Reconexión automática</h3>
+          <p class="hint">Los micrófonos que conectes se guardan y se intentará reconectarlos si están disponibles.</p>
+          <form id="bt-reconnect-form" class="form inline-form">
+            <label>Refresco (s)
+              <input name="auto_reconnect_interval_sec" type="number" min="15" max="3600" value="60" />
+            </label>
+            <button type="submit" class="btn secondary">Guardar</button>
+          </form>
+        </div>
         <div class="grid two">
           <div class="card">
             <h3>Dispositivos detectados</h3>
-            <p class="hint">Escanea y selecciona un micrófono para conectarlo.</p>
+            <p class="hint">Escanea y conecta — quedará guardado para reconexión automática.</p>
             <button id="bt-discover" class="btn primary">Escanear</button>
             <p id="bt-scan-status" class="hint hidden"></p>
             <ul id="bt-discovered-list" class="device-list"></ul>
             <div id="bt-discovered-actions" class="row hidden">
-              <button id="bt-connect-selected" class="btn primary">Conectar</button>
+              <button id="bt-connect-selected" class="btn primary">Conectar y guardar</button>
             </div>
           </div>
           <div class="card">
-            <h3>Conectados</h3>
-            <p class="hint">Conectado ≠ grabando. Activa la grabación en el panel de detalle.</p>
+            <h3>Guardados</h3>
+            <p class="hint">Desvincular (unpair) elimina el dispositivo de esta lista.</p>
             <ul id="bt-connected-list" class="device-list"></ul>
           </div>
         </div>
@@ -247,14 +269,6 @@
             <audio id="bt-test-player" controls></audio>
           </div>
         </div>
-        <div class="card">
-          <h3>Preferencias globales</h3>
-          <form id="bt-form" class="form">
-            <label class="check"><input name="default_record_on_connect" type="checkbox" /> Activar grabación al conectar (no recomendado)</label>
-            <label>Timeout escaneo (s) <input name="scan_timeout_sec" type="number" min="3" max="120" /></label>
-            <button type="submit" class="btn primary">Guardar</button>
-          </form>
-        </div>
       </section>
 
       <section id="tab-monitoring" class="page hidden">
@@ -264,64 +278,61 @@
               <h3>Monitorización activa</h3>
               <p id="mon-toggle-hint" class="hint">Desactivada — no se registran datos</p>
             </div>
-            <button
-              type="button"
-              id="mon-enabled-toggle"
-              class="toggle-switch"
-              role="switch"
-              aria-checked="false"
-              aria-label="Activar o desactivar monitorización"
-            >
+            <button type="button" id="mon-enabled-toggle" class="toggle-switch" role="switch" aria-checked="false" aria-label="Activar o desactivar monitorización">
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
               <span id="mon-toggle-label" class="toggle-text">OFF</span>
             </button>
           </div>
         </div>
 
-        <div class="grid two">
-          <div class="card">
-            <h3>Servidor NILO (endpoints)</h3>
-            <div class="form">
-              <label>Host API
-                <input id="mon-api-host" name="api_host" type="text" placeholder="nilomed.eu" value="nilomed.eu" />
-              </label>
-              <div class="row">
-                <button type="button" id="mon-health-check" class="btn secondary">Probar conexión</button>
-              </div>
-              <div id="mon-health-result" class="health-result hidden"></div>
+        <div class="subtabs" id="monitoring-subtabs">
+          <button type="button" class="subtab active" data-subtab="mon-panel-server">Servidor</button>
+          <button type="button" class="subtab" data-subtab="mon-panel-model">Modelo</button>
+          <button type="button" class="subtab" data-subtab="mon-panel-schedule">Intervalos</button>
+        </div>
+
+        <div id="mon-panel-server" class="subtab-panel card">
+          <h3>Servidor NILO (endpoints)</h3>
+          <div class="form">
+            <label>Host API
+              <input id="mon-api-host" name="api_host" type="text" placeholder="nilomed.eu" value="nilomed.eu" />
+            </label>
+            <div class="row">
+              <button type="button" id="mon-health-check" class="btn secondary">Probar conexión</button>
             </div>
-          </div>
-          <div class="card">
-            <h3>Modelo durante monitorización</h3>
-            <p class="hint">Elige backend y si la inferencia corre en el nodo o en la cámara.</p>
-            <form id="monitoring-model-form" class="form">
-              <label>Backend pose
-                <select name="pose_backend">
-                  <option value="none">Sin modelo</option>
-                  <option value="mediapipe">MediaPipe</option>
-                  <option value="yolo">YOLO</option>
-                </select>
-              </label>
-              <label>Ubicación
-                <select name="model_placement">
-                  <option value="host">En el nodo (PC)</option>
-                  <option value="device">En la cámara OAK</option>
-                </select>
-              </label>
-              <label>FPS de pose (muestreo)
-                <input name="pose_fps" type="number" min="1" max="60" value="30" />
-              </label>
-              <p class="hint inline-hint">1 = ~1 frame/s de landmarks; 30 = todos los frames (cámara a 30 FPS).</p>
-              <label class="check mon-check-large">
-                <input name="require_full_pose" type="checkbox" />
-                No registrar datos sin pose completa (33/33 landmarks visibles)
-              </label>
-              <button type="submit" class="btn primary">Guardar modelo y calidad</button>
-            </form>
+            <div id="mon-health-result" class="health-result hidden"></div>
           </div>
         </div>
 
-        <div class="card">
+        <div id="mon-panel-model" class="subtab-panel card hidden">
+          <h3>Modelo durante monitorización</h3>
+          <form id="monitoring-model-form" class="form">
+            <label>Backend pose
+              <select name="pose_backend">
+                <option value="none">Sin modelo</option>
+                <option value="mediapipe">MediaPipe</option>
+                <option value="yolo">YOLO</option>
+              </select>
+            </label>
+            <label>Ubicación
+              <select name="model_placement">
+                <option value="host">En el nodo (PC)</option>
+                <option value="device">En la cámara OAK</option>
+              </select>
+            </label>
+            <label>FPS de pose (muestreo)
+              <input name="pose_fps" type="number" min="1" max="60" value="30" />
+            </label>
+            <p class="hint inline-hint">1 = ~1 frame/s de landmarks; 30 = todos los frames (cámara a 30 FPS).</p>
+            <label class="check mon-check-large">
+              <input name="require_full_pose" type="checkbox" />
+              No registrar datos sin pose completa (33/33 landmarks visibles)
+            </label>
+            <button type="submit" class="btn primary">Guardar modelo y calidad</button>
+          </form>
+        </div>
+
+        <div id="mon-panel-schedule" class="subtab-panel card hidden">
           <h3>Intervalos de monitorización</h3>
           <form id="monitoring-form" class="form">
             <label>Modo
@@ -336,7 +347,7 @@
             </div>
             <div id="mon-windows-section" class="hidden">
               <h4 class="cam-subtitle">Ventanas horarias</h4>
-              <p class="hint">Añade varias ventanas con días y horas distintos (ej. lun–mié 09:00–14:00 y jue–vie 14:00–22:00).</p>
+              <p class="hint">Añade varias ventanas con días y horas distintos.</p>
               <div id="mon-windows-list"></div>
               <button type="button" id="mon-add-window" class="btn secondary">+ Añadir ventana</button>
             </div>
@@ -350,33 +361,48 @@
       </section>
 
       <section id="tab-mqtt" class="page hidden">
-        <div class="card">
-          <h3>Canal MQTT</h3>
-          <div id="mqtt-channel" class="kv"></div>
+        <div class="subtabs" id="mqtt-subtabs">
+          <button type="button" class="subtab active" data-subtab="mqtt-panel-broker">Broker</button>
+          <button type="button" class="subtab" data-subtab="mqtt-panel-channels">Canales</button>
         </div>
-        <div class="card">
-          <h3>Estado MQTT</h3>
-          <pre id="mqtt-info" class="code"></pre>
-        </div>
-        <div class="card">
-          <h3>Configuración broker</h3>
+
+        <div id="mqtt-panel-broker" class="subtab-panel card">
+          <h3>Configuración del broker</h3>
+          <pre id="mqtt-info" class="code mqtt-status-snippet"></pre>
           <form id="mqtt-form" class="form">
             <label class="check"><input name="enabled" type="checkbox" /> Habilitado</label>
             <label>Host <input name="broker_host" type="text" placeholder="nilomed.eu" /></label>
             <label>Puerto <input name="broker_port" type="number" /></label>
+            <label class="check"><input name="use_tls" type="checkbox" /> TLS</label>
             <label>Usuario <input name="username" type="text" autocomplete="off" /></label>
             <label>Contraseña <input name="password" type="password" autocomplete="new-password" /></label>
-            <button type="submit" class="btn primary">Guardar (requiere reinicio manual)</button>
+            <div class="row">
+              <button type="submit" class="btn primary">Guardar</button>
+              <button type="button" id="mqtt-test-connection" class="btn secondary">Probar conexión</button>
+            </div>
+            <div id="mqtt-test-result" class="health-result hidden"></div>
           </form>
         </div>
-        <div class="card">
-          <h3>Ejemplo comando remoto</h3>
+
+        <div id="mqtt-panel-channels" class="subtab-panel card hidden">
+          <h3>Canales MQTT</h3>
+          <div id="mqtt-channel" class="kv"></div>
+          <form id="mqtt-channels-form" class="form">
+            <label>Canal comandos
+              <input name="topic_template" type="text" placeholder="nilo/node:{node_short_id}" />
+            </label>
+            <label>Canal eventos
+              <input name="events_topic_template" type="text" placeholder="nilo/node:{node_short_id}/events" />
+            </label>
+            <button type="submit" class="btn primary">Guardar canales</button>
+          </form>
+          <h4 class="cam-subtitle">Ejemplo comando remoto</h4>
           <pre id="mqtt-example" class="code"></pre>
         </div>
       </section>
     </div>
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

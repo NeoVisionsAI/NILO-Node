@@ -80,7 +80,7 @@ install_apt_packages() {
   local required=(
     ca-certificates curl gnupg git
     hostapd dnsmasq iproute2 iw
-    bluez
+    bluez lm-sensors
     ffmpeg
     network-manager
     python3 python3-pip
@@ -102,6 +102,10 @@ install_apt_packages() {
   done
 
   log "Paquetes instalados."
+
+  if command -v sensors-detect >/dev/null 2>&1; then
+    sensors-detect --auto >/dev/null 2>&1 || warn "sensors-detect no pudo configurar módulos (opcional)"
+  fi
 
   if systemctl is-enabled hostapd >/dev/null 2>&1; then
     systemctl stop hostapd 2>/dev/null || true

@@ -44,6 +44,8 @@ class CameraSettingsPatch(BaseModel):
     pose_backend: Literal["mediapipe", "yolo", "custom"] | None = None
     auto_connect: bool | None = None
     mock_when_unavailable: bool | None = None
+    record_rgb: bool | None = None
+    record_tof: bool | None = None
 
 
 class WifiSettingsPatch(BaseModel):
@@ -57,6 +59,7 @@ class BluetoothSettingsPatch(BaseModel):
     enabled: bool | None = None
     default_record_on_connect: bool | None = None
     scan_timeout_sec: int | None = Field(default=None, ge=3, le=120)
+    auto_reconnect_interval_sec: int | None = Field(default=None, ge=15, le=3600)
 
 
 class MqttSettingsPatch(BaseModel):
@@ -65,6 +68,7 @@ class MqttSettingsPatch(BaseModel):
     broker_port: int | None = Field(default=None, ge=1, le=65535)
     username: str | None = None
     password: str | None = None
+    use_tls: bool | None = None
     topic_template: str | None = None
     events_topic_template: str | None = None
 
@@ -94,6 +98,14 @@ class MonitoringSettingsPatch(BaseModel):
 
 class MonitoringHealthRequest(BaseModel):
     host: str = "nilomed.eu"
+
+
+class MqttTestRequest(BaseModel):
+    broker_host: str | None = None
+    broker_port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None
+    use_tls: bool | None = None
 
 
 class SettingsPatchRequest(BaseModel):
@@ -245,5 +257,54 @@ def create_setup_router(
                     last_error = f"{url}: {exc}"
 
         return {"ok": False, "url": attempts[0] if attempts else None, "error": last_error or "Sin respuesta"}
+
+    @router.post("/mqtt/test-connection", dependencies=[auth])
+    async def mqtt_test_connection(body: MqttTestRequest) -> dict[str, Any]:
+        mqtt_cfg = config.mqtt.model_copy(deep=True)
+        if body.broker_host is not None:
+            mqtt_cfg.broker_host = body.broker_host.strip()
+        if body.broker_port is not None:
+            mqtt_cfg.broker_port = body.broker_port
+        if body.username is not None:
+            mqtt_cfg.username = body.username
+        if body.password is not None:
+            mqtt_cfg.password = body.password
+        if body.use_tls is not None:
+            mqtt_cfg.use_tls = body.use_tls
+
+        host = mqtt_cfg.broker_host.strip()
+        if not host:
+            raise HTTPException(status_code=422, detail="Host del broker vacío")
+
+        try:
+            import aiomqtt
+        except ImportError:
+            if mqtt_cfg.mock_when_unavailable:
+                return {
+                    "ok": True,
+                    "mock": True,
+                    "detail": "aiomqtt no instalado — modo simulación",
+                }
+            return {"ok": False, "error": "aiomqtt no instalado en el contenedor"}
+
+        import ssl
+
+        tls_context = ssl.create_default_context() if mqtt_cfg.use_tls else None
+        try:
+            async with aiomqtt.Client(
+                hostname=host,
+                port=mqtt_cfg.broker_port,
+                username=mqtt_cfg.username or None,
+                password=mqtt_cfg.password or None,
+                tls_context=tls_context,
+                timeout=12,
+            ) as _client:
+                return {
+                    "ok": True,
+                    "broker": f"{host}:{mqtt_cfg.broker_port}",
+                    "tls": mqtt_cfg.use_tls,
+                }
+        except Exception as exc:
+            return {"ok": False, "broker": f"{host}:{mqtt_cfg.broker_port}", "error": str(exc)}
 
     return router

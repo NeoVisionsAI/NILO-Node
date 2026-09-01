@@ -175,6 +175,44 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
 }
 .card h3 { margin: 0 0 1rem; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
 
+.subtabs {
+  display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 1rem;
+  padding: 0.35rem; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border);
+}
+.subtab {
+  border: none; background: transparent; color: var(--muted);
+  padding: 0.55rem 1rem; border-radius: 8px; font-weight: 600; font-size: 0.88rem; cursor: pointer;
+}
+.subtab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.subtab-panel { margin-top: 0; }
+.progress-wrap { margin: 1rem 0; }
+.progress-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+.progress-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.progress-bar.indeterminate span {
+  display: block; height: 100%; width: 40%; background: var(--accent);
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(260%); }
+}
+.model-loaded-badge {
+  display: inline-block; margin: 0.75rem 0; padding: 0.45rem 0.85rem;
+  border-radius: 999px; font-weight: 600; font-size: 0.85rem;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success); border: 1px solid var(--success);
+}
+.model-test-preview { margin-top: 0.75rem; }
+.cam-record-toggles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem;
+}
+.toggle-card {
+  padding: 0.75rem 1rem; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated);
+}
+.inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem; }
+.inline-form label { flex: 1; min-width: 180px; }
+.mqtt-status-snippet { max-height: 120px; margin-bottom: 1rem; }
+
 .dashboard-hero {
   display: grid;
   grid-template-columns: auto 1fr auto;

@@ -15,6 +15,9 @@ services:
       - nilo-data:/data
       - /dev/bus/usb:/dev/bus/usb
       - /var/run/dbus:/var/run/dbus
+      - /proc/uptime:/host/proc/uptime:ro
+      - /sys/class/thermal:/sys/class/thermal:ro
+      - /sys/class/hwmon:/sys/class/hwmon:ro
     devices:
       - /dev/snd:/dev/snd
     environment:

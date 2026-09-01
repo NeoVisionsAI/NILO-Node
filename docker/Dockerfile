@@ -55,6 +55,7 @@ RUN apt-get update \
         dnsmasq \
         procps \
         util-linux \
+        lm-sensors \
     && rm -rf /etc/dnsmasq.d/* \
     && printf '%s\n' '# NILO-Node manages dnsmasq via /data/wifi/dnsmasq.conf' > /etc/dnsmasq.conf \
     && rm -rf /var/lib/apt/lists/*

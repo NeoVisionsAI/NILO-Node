@@ -140,6 +140,7 @@ class BluetoothConfig(BaseModel):
     mock_when_unavailable: bool = True
     auto_power_on: bool = True
     scan_timeout_sec: int = 10
+    auto_reconnect_interval_sec: int = 60
     sample_rate: int = 16000
     channels: int = 1
     format: Literal["flac"] = "flac"

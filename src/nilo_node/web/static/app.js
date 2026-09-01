@@ -231,8 +231,15 @@ function datetimeLocalToIso(value) {
 async function loadSettingsForms() {
   const data = await api("/api/v1/setup/settings", { silent: true });
   const saved = data.settings || {};
+  const liveCamera = data.live.camera || {};
+  const savedCamera = saved.camera || {};
   const merged = {
-    camera: { ...data.live.camera, ...saved.camera },
+    camera: {
+      ...liveCamera,
+      ...savedCamera,
+      record_rgb: savedCamera.record_rgb ?? liveCamera.defaults?.rgb_enabled ?? true,
+      record_tof: savedCamera.record_tof ?? liveCamera.defaults?.tof_enabled ?? true,
+    },
     wifi: { ...data.live.wifi, ...saved.wifi },
     bluetooth: { ...data.live.bluetooth, ...saved.bluetooth },
     mqtt: { ...data.live.mqtt, ...saved.mqtt },
@@ -240,8 +247,14 @@ async function loadSettingsForms() {
   };
   fillForm($("camera-form"), merged.camera);
   fillForm($("wifi-form"), merged.wifi);
-  fillForm($("bt-form"), merged.bluetooth);
+  fillForm($("bt-reconnect-form"), merged.bluetooth);
   fillForm($("mqtt-form"), merged.mqtt);
+  fillForm($("mqtt-channels-form"), merged.mqtt);
+  if ($("cam-record-rgb")) $("cam-record-rgb").checked = Boolean(merged.camera.record_rgb);
+  if ($("cam-record-tof")) $("cam-record-tof").checked = Boolean(merged.camera.record_tof);
+    if ($("cam-model-backend")) {
+    $("cam-model-backend").value = merged.camera.pose_backend || "mediapipe";
+  }
   if ($("monitoring-form")) {
     const mon = normalizeMonitoringSettings({ ...merged.monitoring });
     monitoringWindows = mon.windows.map((w) => ({
@@ -264,7 +277,50 @@ async function loadSettingsForms() {
   return merged;
 }
 
+function initSubtabs(rootId) {
+  const root = $(rootId);
+  if (!root) return;
+  root.querySelectorAll(".subtab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const panelId = btn.dataset.subtab;
+      root.querySelectorAll(".subtab").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      root.parentElement.querySelectorAll(".subtab-panel").forEach((panel) => {
+        panel.classList.toggle("hidden", panel.id !== panelId);
+      });
+    });
+  });
+}
+
+function setModelLoading(active) {
+  $("cam-model-progress-wrap")?.classList.toggle("hidden", !active);
+  if ($("cam-model-load")) $("cam-model-load").disabled = active;
+  if ($("cam-model-test")) $("cam-model-test").disabled = active;
+}
+
+async function saveCameraRecordingToggles() {
+  const patch = {
+    record_rgb: Boolean($("cam-record-rgb")?.checked),
+    record_tof: Boolean($("cam-record-tof")?.checked),
+  };
+  await saveSettings("camera", patch, "Registro de vídeo");
+}
+
+async function showModelTestPreview(blob) {
+  const img = $("cam-model-test-preview");
+  const ph = $("cam-model-test-placeholder");
+  if (!img || !ph) return;
+  if (img.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
+  const url = URL.createObjectURL(blob);
+  img.dataset.objectUrl = url;
+  img.src = url;
+  img.classList.remove("hidden");
+  ph.classList.add("hidden");
+}
+
 function statCard(label, value, cls = "") {
+  return `<div class="card"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
+}
   return `<div class="card"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
 }
 
@@ -521,14 +577,20 @@ function updateCamConnectButton(s) {
 
 function renderModelStatus(model) {
   const el = $("cam-model-status");
-  if (!el || !model) return;
+  const badge = $("cam-model-loaded-badge");
+  if (!model) return;
+  const loadedOnDevice = Boolean(model.loaded && model.placement === "device");
+  if (badge) badge.classList.toggle("hidden", !loadedOnDevice);
+  if (!el) return;
   const rows = [
-    ["En cámara OAK", model.loaded && model.placement === "device" ? "Sí" : model.loaded ? "Parcial" : "No"],
     ["Backend", model.backend || "—"],
-    ["Estado", model.message || model.last_error || "—"],
+    ["Estado", model.message || model.last_error || (loadedOnDevice ? "Cargado en OAK" : "Sin cargar")],
   ];
   if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
   el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
+  if ($("cam-model-backend") && model.backend) {
+    $("cam-model-backend").value = model.backend;
+  }
 }
 
 function renderCameraStatusSummary(s) {
@@ -667,10 +729,6 @@ document.querySelectorAll("[data-goto]").forEach((btn) => {
   btn.addEventListener("click", () => showTab(btn.dataset.goto));
 });
 
-$("logout-btn").addEventListener("click", () => {
-  showToast("Sesión cerrada", "ok");
-  logout();
-});
 $("logout-btn-top").addEventListener("click", () => {
   showToast("Sesión cerrada", "ok");
   logout();
@@ -699,15 +757,61 @@ $("camera-form").addEventListener("submit", async (e) => {
   await loadCameraStatus({ silent: true });
 });
 
-$("bt-form").addEventListener("submit", async (e) => {
+$("bt-reconnect-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
-  await saveSettings("bluetooth", formToPatch(e.target), "Audio inalámbrico");
+  await saveSettings("bluetooth", formToPatch(e.target), "Reconexión automática");
+});
+
+$("cam-record-rgb")?.addEventListener("change", () => {
+  saveCameraRecordingToggles().catch((err) => showToast(err.message, "error"));
+});
+$("cam-record-tof")?.addEventListener("change", () => {
+  saveCameraRecordingToggles().catch((err) => showToast(err.message, "error"));
 });
 
 $("mqtt-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  await saveSettings("mqtt", formToPatch(e.target), "MQTT");
+  const patch = formToPatch(e.target);
+  patch.use_tls = e.target.elements.use_tls?.checked ?? false;
+  await saveSettings("mqtt", patch, "MQTT");
   showToast("MQTT guardado — reinicia el servicio para aplicar credenciales", "ok");
+});
+
+$("mqtt-channels-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await saveSettings("mqtt", formToPatch(e.target), "Canales MQTT");
+  await loadDashboard({ silent: true });
+});
+
+$("mqtt-test-connection")?.addEventListener("click", async () => {
+  const form = $("mqtt-form");
+  const patch = formToPatch(form);
+  patch.use_tls = form.elements.use_tls?.checked ?? false;
+  const resultEl = $("mqtt-test-result");
+  if (resultEl) {
+    resultEl.classList.remove("hidden", "ok", "err");
+    resultEl.textContent = "Probando broker…";
+  }
+  try {
+    const r = await api("/api/v1/setup/mqtt/test-connection", {
+      method: "POST",
+      body: JSON.stringify(patch),
+      silent: true,
+    });
+    if (resultEl) {
+      resultEl.classList.toggle("ok", Boolean(r.ok));
+      resultEl.classList.toggle("err", !r.ok);
+      resultEl.textContent = r.ok
+        ? `✓ Conexión correcta (${r.broker})`
+        : `✕ ${r.error || "No se pudo conectar"}`;
+    }
+    if (r.ok) showToast("Conexión MQTT correcta", "ok");
+  } catch (err) {
+    if (resultEl) {
+      resultEl.classList.add("err");
+      resultEl.textContent = `✕ ${err.message}`;
+    }
+  }
 });
 
 $("cam-discover").addEventListener("click", async () => {
@@ -813,11 +917,9 @@ $("cam-disconnect").addEventListener("click", async () => {
 });
 
 $("cam-model-load").addEventListener("click", async () => {
+  const backend = $("cam-model-backend")?.value || "mediapipe";
+  setModelLoading(true);
   try {
-    const backend =
-      $("camera-form").elements.pose_backend?.value ||
-      dashboardCache?.camera?.pose_backend ||
-      "mediapipe";
     const r = await api("/api/v1/camera/model/load", {
       method: "POST",
       body: JSON.stringify({ backend, placement: "device" }),
@@ -828,6 +930,8 @@ $("cam-model-load").addEventListener("click", async () => {
     await saveSettings("camera", { pose_backend: backend }, "Backend de pose");
   } catch (err) {
     setCamBanner(`Cargar modelo: ${err.message}`, "err");
+  } finally {
+    setModelLoading(false);
   }
 });
 
@@ -839,7 +943,9 @@ $("cam-model-unload").addEventListener("click", async () => {
       successMessage: "Modelo descargado",
     });
     renderModelStatus(r);
-    $("cam-model-test-details")?.classList.add("hidden");
+    $("cam-model-test-json")?.classList.add("hidden");
+    $("cam-model-test-preview")?.classList.add("hidden");
+    $("cam-model-test-placeholder")?.classList.remove("hidden");
     await loadCameraStatus({ silent: true });
   } catch (err) {
     setCamBanner(`Quitar modelo: ${err.message}`, "err");
@@ -856,15 +962,15 @@ $("cam-model-test").addEventListener("click", async () => {
       const raw = atob(r.annotated_jpeg_base64);
       const bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
-      await showPreviewFromBlob(new Blob([bytes], { type: "image/jpeg" }), {
-        notify: false,
-        message: "Prueba completada",
-      });
+      await showModelTestPreview(new Blob([bytes], { type: "image/jpeg" }));
     }
     const details = { ...r };
     delete details.annotated_jpeg_base64;
-    $("cam-model-test-json").textContent = JSON.stringify(details, null, 2);
-    $("cam-model-test-details").classList.remove("hidden");
+    const jsonEl = $("cam-model-test-json");
+    if (jsonEl) {
+      jsonEl.textContent = JSON.stringify(details, null, 2);
+      jsonEl.classList.remove("hidden");
+    }
 
     if (r.engine_available) {
       const n = r.landmarks_detected ?? 0;
@@ -873,7 +979,6 @@ $("cam-model-test").addEventListener("click", async () => {
         ? `${backend} OK — ${n} landmarks detectados`
         : r.message || `${backend} OK — sin cuerpo visible en el frame`;
       showToast(msg, r.pose_detected ? "ok" : "warn");
-      setCamBanner(msg, r.pose_detected ? "ok" : "warn");
     }
     await loadCameraStatus({ silent: true });
   } catch (err) {
@@ -1025,15 +1130,16 @@ function renderBtDiscoveredList() {
 
 function renderBtConnectedList() {
   const list = $("bt-connected-list");
-  const connected = (btStatusCache?.mics || []).filter((m) => m.connected);
-  if (!connected.length) {
-    list.innerHTML = "<li class='empty-item'>No hay micrófonos conectados</li>";
+  const saved = (btStatusCache?.mics || []).filter((m) => m.paired);
+  if (!saved.length) {
+    list.innerHTML = "<li class='empty-item'>No hay micrófonos guardados — conecta uno desde el escaneo</li>";
     if (!btSelectedConnectedMac) $("bt-detail-card").classList.add("hidden");
     return;
   }
-  list.innerHTML = connected
+  list.innerHTML = saved
     .map((m) => {
       const selected = m.mac_address === btSelectedConnectedMac ? " selected" : "";
+      const link = m.connected ? "conectado" : "desconectado (reintento auto)";
       const rec = m.record_enabled
         ? m.recording_mode === "on_demand" && !m.recording_active
           ? "activada (en espera)"
@@ -1042,7 +1148,7 @@ function renderBtConnectedList() {
       return `<li class="selectable${selected}" data-mac="${btEscape(m.mac_address)}">
         <div>
           <div class="name">${btEscape(m.label || m.mac_address)}</div>
-          <div class="mac">${btEscape(m.mac_address)} · ${btEscape(BT_RECORDING_MODE_LABELS[m.recording_mode] || m.recording_mode)} · ${btEscape(rec)}</div>
+          <div class="mac">${btEscape(m.mac_address)} · ${btEscape(link)} · ${btEscape(BT_RECORDING_MODE_LABELS[m.recording_mode] || m.recording_mode)} · ${btEscape(rec)}</div>
         </div>
       </li>`;
     })
@@ -1076,10 +1182,19 @@ function showBtMicDetail(mac) {
 
 async function loadBluetoothTab(options = {}) {
   btStatusCache = await api("/api/v1/bluetooth/status", options);
+  try {
+    const settings = await api("/api/v1/setup/settings", { silent: true });
+    fillForm($("bt-reconnect-form"), {
+      ...(settings.live?.bluetooth || {}),
+      ...(settings.settings?.bluetooth || {}),
+    });
+  } catch {
+    /* optional */
+  }
   renderBtConnectedList();
   if (btSelectedConnectedMac) {
     const stillThere = (btStatusCache.mics || []).some(
-      (m) => m.mac_address === btSelectedConnectedMac && m.connected,
+      (m) => m.mac_address === btSelectedConnectedMac && m.paired,
     );
     if (stillThere) showBtMicDetail(btSelectedConnectedMac);
     else {
@@ -1119,8 +1234,9 @@ $("bt-connect-selected").addEventListener("click", async () => {
         mac_address: btSelectedDiscoverMac,
         device_name: device?.name || device?.label || null,
       }),
-      successMessage: "Micrófono conectado",
+      successMessage: "Micrófono conectado y guardado",
     });
+    showToast("Guardado — se reconectará automáticamente cuando esté disponible", "ok");
     btSelectedDiscoverMac = null;
     await loadBluetoothTab({ silent: true });
   } catch (err) {
@@ -1222,3 +1338,6 @@ if (localStorage.getItem(TOKEN_KEY)) {
 }
 
 initTheme();
+initSubtabs("camera-subtabs");
+initSubtabs("monitoring-subtabs");
+initSubtabs("mqtt-subtabs");

@@ -61,6 +61,7 @@ class BluetoothManager:
         self._session_manifests: dict[str, dict] = {}
         self._last_discovered: list[BluetoothDeviceInfo] = []
         self._test_recording_dir = test_recordings_dir(Path(config.storage.base_path))
+        self._reconnect_task: asyncio.Task[None] | None = None
 
     def _adapter_available(self) -> bool:
         return Path(f"/sys/class/bluetooth/{self._bt.adapter}").exists()
@@ -103,6 +104,7 @@ class BluetoothManager:
             self._adapter_state = BluetoothAdapterState.RUNNING
             await self.sync_connection_state()
             logger.info("Bluetooth adapter ready: %s", self._bt.adapter)
+            self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
         except Exception as exc:
             self._error = str(exc)
             if self._bt.mock_when_unavailable:
@@ -116,6 +118,13 @@ class BluetoothManager:
                 raise
 
     async def stop(self) -> None:
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
         for chunk_id in list(self._sessions.keys()):
             await self.abort_chunk(chunk_id)
         self._adapter_state = BluetoothAdapterState.STOPPED
@@ -141,6 +150,28 @@ class BluetoothManager:
                         "recording_active": mic.recording_active,
                     },
                 )
+
+    async def _auto_reconnect_loop(self) -> None:
+        while True:
+            interval = max(15, int(self._bt.auto_reconnect_interval_sec))
+            try:
+                await asyncio.sleep(interval)
+                if self._mock or self._adapter_state != BluetoothAdapterState.RUNNING:
+                    continue
+                await self.sync_connection_state()
+                for mic in self._repo.list_bluetooth_mics():
+                    if not mic.paired or mic.connected:
+                        continue
+                    try:
+                        logger.info("Auto-reconnect Bluetooth mic %s", mic.mac_address)
+                        await discovery.connect_device(mic.mac_address)
+                        await self.sync_connection_state()
+                    except Exception as exc:
+                        logger.debug("Auto-reconnect failed for %s: %s", mic.mac_address, exc)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Bluetooth auto-reconnect loop error: %s", exc)
 
     async def discover(self) -> list[BluetoothDeviceInfo]:
         async with self._lock:

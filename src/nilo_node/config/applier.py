@@ -16,6 +16,21 @@ from nilo_node.network.wifi_manager import WifiApManager
 logger = logging.getLogger(__name__)
 
 
+def _normalize_camera_patch(raw: dict[str, Any], current: CameraConfig) -> dict[str, Any]:
+    patch = {k: v for k, v in raw.items() if v is not None}
+    defaults = current.defaults.model_dump()
+    changed = False
+    if "record_rgb" in patch:
+        defaults["rgb_enabled"] = bool(patch.pop("record_rgb"))
+        changed = True
+    if "record_tof" in patch:
+        defaults["tof_enabled"] = bool(patch.pop("record_tof"))
+        changed = True
+    if changed:
+        patch["defaults"] = defaults
+    return patch
+
+
 class SettingsApplier:
     def __init__(
         self,
@@ -36,11 +51,12 @@ class SettingsApplier:
         applied: dict[str, Any] = {}
 
         if settings.camera:
+            camera_patch = _normalize_camera_patch(settings.camera, self._config.camera)
             if self._config_path.is_file():
-                camera_cfg = patch_camera_section(self._config_path, settings.camera)
+                camera_cfg = patch_camera_section(self._config_path, camera_patch)
             else:
                 merged = self._config.camera.model_dump()
-                merged.update(settings.camera)
+                merged.update(camera_patch)
                 camera_cfg = CameraConfig.model_validate(merged)
             self._camera.apply_config(camera_cfg)
             self._config.camera = camera_cfg
