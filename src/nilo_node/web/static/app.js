@@ -252,7 +252,7 @@ async function loadSettingsForms() {
   fillForm($("mqtt-channels-form"), merged.mqtt);
   if ($("cam-record-rgb")) $("cam-record-rgb").checked = Boolean(merged.camera.record_rgb);
   if ($("cam-record-tof")) $("cam-record-tof").checked = Boolean(merged.camera.record_tof);
-    if ($("cam-model-backend")) {
+  if ($("cam-model-backend")) {
     $("cam-model-backend").value = merged.camera.pose_backend || "mediapipe";
   }
   if ($("monitoring-form")) {
@@ -319,8 +319,6 @@ async function showModelTestPreview(blob) {
 }
 
 function statCard(label, value, cls = "") {
-  return `<div class="card"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
-}
   return `<div class="card"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
 }
 
