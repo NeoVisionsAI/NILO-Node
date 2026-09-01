@@ -9,7 +9,7 @@ from typing import Any
 from nilo_node.bluetooth.manager import BluetoothManager
 from nilo_node.camera.manager import CameraManager
 from nilo_node.config.models import AppConfig, CameraConfig
-from nilo_node.config.persistence import patch_camera_section, patch_wifi_section
+from nilo_node.config.persistence import merge_camera_config, merge_wifi_config, patch_camera_section, resolve_config_path
 from nilo_node.config.runtime_store import RuntimeSettings
 from nilo_node.network.wifi_manager import WifiApManager
 
@@ -52,20 +52,22 @@ class SettingsApplier:
 
         if settings.camera:
             camera_patch = _normalize_camera_patch(settings.camera, self._config.camera)
-            if self._config_path.is_file():
-                camera_cfg = patch_camera_section(self._config_path, camera_patch)
-            else:
-                merged = self._config.camera.model_dump()
-                merged.update(camera_patch)
-                camera_cfg = CameraConfig.model_validate(merged)
+            camera_cfg = merge_camera_config(
+                self._config_path if self._config_path.is_file() else None,
+                self._config.camera,
+                camera_patch,
+            )
             self._camera.apply_config(camera_cfg)
             self._config.camera = camera_cfg
             applied["camera"] = settings.camera
 
         if settings.wifi:
-            if self._config_path.is_file():
-                patch_wifi_section(self._config_path, settings.wifi)
-            for key, value in settings.wifi.items():
+            wifi_merged = merge_wifi_config(
+                self._config_path if self._config_path.is_file() else None,
+                self._config.wifi.model_dump(),
+                settings.wifi,
+            )
+            for key, value in wifi_merged.items():
                 if hasattr(self._wifi._wifi, key):
                     setattr(self._wifi._wifi, key, value)
             if settings.wifi.get("enabled", self._config.wifi.enabled):

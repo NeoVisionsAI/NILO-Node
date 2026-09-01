@@ -150,3 +150,21 @@ def test_patch_settings_via_api(tmp_path: Path) -> None:
     assert row is not None
     data = json.loads(row["payload"])
     assert data["camera"]["device_ip"] == "10.0.0.5"
+
+
+def test_patch_settings_readonly_config(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    cfg_path = tmp_path / "nilo-node.yaml"
+    cfg_path.chmod(0o444)
+    headers = {"Authorization": "Bearer api-token"}
+    res = client.patch(
+        "/api/v1/setup/settings",
+        headers=headers,
+        json={"camera": {"pose_backend": "mediapipe"}},
+    )
+    assert res.status_code == 200
+    assert res.json()["settings"]["camera"]["pose_backend"] == "mediapipe"
+
+    status = client.get("/api/v1/camera/model", headers=headers)
+    assert status.status_code == 200
+    cfg_path.chmod(0o644)

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from nilo_node.api.deps import require_auth
 from nilo_node.camera.manager import CameraManager
 from nilo_node.config.models import AppConfig, CameraConfig
-from nilo_node.config.persistence import patch_camera_section, resolve_config_path
+from nilo_node.config.persistence import merge_camera_config, resolve_config_path, _path_is_writable
 
 
 class ConnectRequest(BaseModel):
@@ -128,7 +128,15 @@ def create_camera_router(
 
     @router.get("/model", dependencies=[auth])
     async def camera_model_status() -> dict[str, Any]:
-        return camera.get_model_state()
+        state = camera.get_model_state()
+        loaded = bool(state.get("loaded"))
+        placement = state.get("placement") or "host"
+        return {
+            **state,
+            "model_loaded": loaded,
+            "loaded_on_device": loaded and placement == "device",
+            "loaded_on_host": loaded and placement == "host",
+        }
 
     @router.post("/model/load", dependencies=[auth])
     async def camera_model_load(body: ModelLoadRequest) -> dict[str, Any]:
@@ -138,7 +146,7 @@ def create_camera_router(
         if backend not in ("mediapipe", "yolo"):
             raise HTTPException(status_code=422, detail="backend debe ser mediapipe o yolo")
         try:
-            return await camera.load_pose_model(backend, placement="device")
+            return await camera.load_pose_model(backend, placement=body.placement)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -151,12 +159,15 @@ def create_camera_router(
         updates = body.model_dump(exclude_none=True)
         if not updates:
             return {"camera": camera.get_status().model_dump(), "updated": {}}
-        new_cfg = patch_camera_section(cfg_path, updates)
+        new_cfg = merge_camera_config(cfg_path, config.camera, updates)
         camera.apply_config(new_cfg)
+        config.camera = new_cfg
         return {
             "camera": camera.get_status().model_dump(),
+            "model": camera.get_model_state(),
             "updated": updates,
             "config_path": str(cfg_path),
+            "config_writable": _path_is_writable(cfg_path),
         }
 
     return router
