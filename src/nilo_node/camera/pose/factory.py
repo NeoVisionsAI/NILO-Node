@@ -26,10 +26,8 @@ def probe_pose_engine(backend: str) -> tuple[bool, str | None]:
         if engine.available:
             return True, None
         if backend == "mediapipe":
-            return (
-                False,
-                "MediaPipe no pudo inicializarse (p. ej. libEGL.so.1 ausente en el contenedor)",
-            )
+            detail = getattr(engine, "init_error", None) or "MediaPipe no pudo inicializarse"
+            return False, detail
         return False, f"Motor {backend} no disponible — revisa dependencias y pesos del modelo"
     finally:
         close = getattr(engine, "close", None)

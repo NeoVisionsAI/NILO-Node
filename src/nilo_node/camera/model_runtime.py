@@ -47,7 +47,7 @@ class ModelRuntimeState:
             return
         backend = self.backend or "?"
         if not self.engine_available:
-            hint = self.last_error or "Revisa dependencias del contenedor (OpenGL/EGL, mediapipe)"
+            hint = self.last_error or "Revisa dependencias del contenedor (OpenGL/EGL/GLES, mediapipe)"
             self.message = f"Modelo {backend} preparado pero motor no disponible — {hint}"
             return
         if backend == "mediapipe":
@@ -244,11 +244,15 @@ class CameraModelRuntime:
     @staticmethod
     def _prepare_yolo(model_dir: Path, blob: bool) -> dict[str, Any]:
         import importlib.util
+        import sys
 
         toolchain = CameraModelRuntime._resolve_model_toolchain()
-        spec = importlib.util.spec_from_file_location("oak_model_toolchain", toolchain)
-        assert spec and spec.loader
+        module_name = "oak_model_toolchain"
+        spec = importlib.util.spec_from_file_location(module_name, toolchain)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"No se pudo cargar model_toolchain desde {toolchain}")
         mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
         spec.loader.exec_module(mod)
 
         weights = model_dir / "yolov8n-pose.pt"

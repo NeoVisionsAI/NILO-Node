@@ -120,6 +120,7 @@ class MediapipePoseEngine:
         self._pose = None
         self._landmarker = None
         self._available = False
+        self._init_error: str | None = None
         if self._init_solutions() or self._init_tasks():
             return
         logger.warning("mediapipe pose unavailable — stub output")
@@ -127,6 +128,10 @@ class MediapipePoseEngine:
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def init_error(self) -> str | None:
+        return self._init_error
 
     def _init_solutions(self) -> bool:
         try:
@@ -147,8 +152,10 @@ class MediapipePoseEngine:
             return True
         except ImportError:
             logger.warning("mediapipe not installed — pose engine falls back to stub output")
+            self._init_error = "mediapipe no instalado"
         except (AttributeError, RuntimeError, OSError) as exc:
             logger.debug("mediapipe solutions API unavailable: %s", exc)
+            self._init_error = str(exc)
         return False
 
     def _init_tasks(self) -> bool:
@@ -169,9 +176,11 @@ class MediapipePoseEngine:
             logger.info("MediaPipe pose using Tasks API (%s)", model_path)
             return True
         except ImportError:
+            self._init_error = "mediapipe tasks API no instalada"
             return False
         except (AttributeError, RuntimeError, OSError, ValueError) as exc:
             logger.warning("mediapipe tasks API unavailable (%s)", exc)
+            self._init_error = str(exc)
             return False
 
     def process(self, frame_bgr: np.ndarray, timestamp: float) -> np.ndarray:

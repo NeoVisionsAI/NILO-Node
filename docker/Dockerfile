@@ -46,6 +46,7 @@ RUN apt-get update \
         libgl1 \
         libegl1 \
         libgbm1 \
+        libgles2 \
         libglib2.0-0 \
         libsm6 \
         libxext6 \
