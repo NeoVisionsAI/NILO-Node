@@ -10,6 +10,7 @@ import time
 import wave
 from pathlib import Path
 
+from nilo_node.bluetooth.audio_capture import record_wav_from_pulse
 from nilo_node.bluetooth.models import mac_file_id, normalize_mac
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,6 @@ def wav_waveform_peaks(path: Path, *, buckets: int = 128) -> list[float]:
         raw = wav.readframes(frame_count)
     if not raw or sample_width != 2:
         return [0.0] * buckets
-    import struct
-
     count = len(raw) // 2
     samples = struct.unpack(f"<{count}h", raw[: count * 2])
     if channels > 1:
@@ -101,14 +100,40 @@ async def record_test_wav(
     duration_sec: float = DEFAULT_TEST_DURATION_SEC,
     sample_rate: int = 16000,
     channels: int = 1,
-) -> tuple[str, Path]:
-    """Record a short WAV clip (mock tone today; real BT capture later)."""
+    allow_mock: bool = False,
+) -> tuple[str, Path, bool]:
+    """Record a short WAV clip from the BT mic (PulseAudio) or mock tone in dev."""
     mac = normalize_mac(mac_address)
     output_dir.mkdir(parents=True, exist_ok=True)
     recording_id = f"{mac_file_id(mac)}_{int(time.time())}"
     path = output_dir / f"{recording_id}.wav"
 
-    # Real PulseAudio/PipeWire capture can be wired here; tone proves playback path.
+    mock_audio = False
+    try:
+        captured = await record_wav_from_pulse(
+            path,
+            mac,
+            duration_sec=duration_sec,
+            sample_rate=sample_rate,
+            channels=channels,
+        )
+    except Exception as exc:
+        if not allow_mock:
+            raise RuntimeError(
+                f"No se pudo grabar desde el micrófono Bluetooth: {exc}"
+            ) from exc
+        captured = False
+
+    if captured:
+        logger.info("Bluetooth test recording (live) saved: %s", path)
+        return recording_id, path, False
+
+    if not allow_mock:
+        raise RuntimeError(
+            "Micrófono conectado pero no hay fuente PulseAudio/BlueZ activa. "
+            "Comprueba que el perfil de audio HSP/HFP esté establecido."
+        )
+
     await asyncio.to_thread(
         _write_tone_wav,
         path,
@@ -116,5 +141,6 @@ async def record_test_wav(
         sample_rate=sample_rate,
         channels=channels,
     )
-    logger.info("Bluetooth test recording saved: %s", path)
-    return recording_id, path
+    mock_audio = True
+    logger.info("Bluetooth test recording (mock tone) saved: %s", path)
+    return recording_id, path, mock_audio

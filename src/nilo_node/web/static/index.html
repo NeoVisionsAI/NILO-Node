@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=10" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -166,13 +166,22 @@
         <div id="cam-panel-model" class="subtab-panel card hidden">
           <h3>Modelo en cámara OAK</h3>
           <p class="hint">Selecciona el backend y cárgalo en la cámara. La inferencia en el nodo se configura en Monitorización.</p>
-          <label class="field-select pose-estimator-select">
+          <div class="pose-estimator-picker">
             <span class="field-select-label">Pose Estimator</span>
-            <select id="cam-model-backend" class="select-styled">
-              <option value="mediapipe">MediaPipe</option>
-              <option value="yolo">YOLO</option>
-            </select>
-          </label>
+            <input type="hidden" id="cam-model-backend" value="mediapipe" />
+            <div class="pose-picker-options" role="radiogroup" aria-label="Pose Estimator">
+              <button type="button" class="pose-picker-card active" data-backend="mediapipe" aria-pressed="true">
+                <span class="pose-picker-badge">MP</span>
+                <span class="pose-picker-title">MediaPipe</span>
+                <span class="pose-picker-desc">33 landmarks · CPU en OAK/host</span>
+              </button>
+              <button type="button" class="pose-picker-card" data-backend="yolo" aria-pressed="false">
+                <span class="pose-picker-badge">YOLO</span>
+                <span class="pose-picker-title">YOLO Pose</span>
+                <span class="pose-picker-desc">17 keypoints · OpenVINO / blob Myriad</span>
+              </button>
+            </div>
+          </div>
           <div id="cam-model-progress-wrap" class="progress-wrap hidden">
             <div class="progress-label">Preparando y cargando modelo…</div>
             <div class="progress-bar indeterminate"><span></span></div>
@@ -350,8 +359,16 @@
             </label>
             <button type="button" id="mon-landmarks-btn" class="btn secondary">Configurar puntos del cuerpo</button>
             <div id="mon-landmarks-panel" class="landmarks-panel hidden">
-              <p class="hint">Pulsa cada punto para exigirlo en la pose. Los seleccionados deben estar visibles para registrar.</p>
-              <svg id="mon-landmarks-svg" class="landmarks-svg" viewBox="0 0 200 360" role="img" aria-label="Mapa de landmarks"></svg>
+              <p class="hint">Pulsa cada punto o usa un grupo corporal. Los seleccionados deben estar visibles para registrar.</p>
+              <div class="landmarks-presets">
+                <button type="button" class="btn ghost landmarks-preset" data-preset="face">Cara</button>
+                <button type="button" class="btn ghost landmarks-preset" data-preset="arms">Brazos</button>
+                <button type="button" class="btn ghost landmarks-preset" data-preset="trunk">Tronco</button>
+                <button type="button" class="btn ghost landmarks-preset" data-preset="legs">Piernas</button>
+                <button type="button" class="btn ghost landmarks-preset" data-preset="upper_body">Parte superior</button>
+                <button type="button" class="btn ghost landmarks-preset" data-preset="lower_body">Parte inferior</button>
+              </div>
+              <svg id="mon-landmarks-svg" class="landmarks-svg" viewBox="0 0 280 560" role="img" aria-label="Mapa de landmarks"></svg>
               <div class="row">
                 <button type="button" id="mon-landmarks-all" class="btn ghost">Todos</button>
                 <button type="button" id="mon-landmarks-none" class="btn ghost">Ninguno</button>
@@ -593,6 +610,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

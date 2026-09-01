@@ -84,7 +84,7 @@ cardmed:
 
 bluetooth:
   enabled: true
-  mock_when_unavailable: true
+  mock_when_unavailable: false
   default_record_on_connect: true
 
 local_api:

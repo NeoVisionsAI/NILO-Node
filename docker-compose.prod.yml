@@ -17,6 +17,9 @@ services:
       # USB optional (dev only); PoE uses host network — see docs/POE_SETUP.md
       - /dev/bus/usb:/dev/bus/usb
       - /var/run/dbus:/var/run/dbus
+      - /sys/class/bluetooth:/sys/class/bluetooth:ro
+      - /run/pulse:/run/pulse
+      - /var/run/pulse:/var/run/pulse
       - /proc/uptime:/host/proc/uptime:ro
       - /sys/class/thermal:/sys/class/thermal:ro
       - /sys/class/hwmon:/sys/class/hwmon:ro
@@ -35,6 +38,7 @@ services:
       - NILO_WIFI_PASSWORD
       - NILO_LOCAL_API_TOKEN
       - NILO_INSTALL_DIR=${NILO_INSTALL_DIR:-/opt/nilo-node}
+      - PULSE_SERVER=${PULSE_SERVER:-unix:/run/pulse/native}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s

@@ -140,13 +140,42 @@ class CameraModelRuntime:
         return await asyncio.to_thread(self._prepare_yolo, model_dir, blob)
 
     @staticmethod
+    def _resolve_model_toolchain() -> Path:
+        import os
+
+        from nilo_node.camera.oak_settings import find_repo_root
+
+        candidates: list[Path] = []
+        env_path = os.environ.get("OAK_TOOLCHAIN_PATH")
+        if env_path:
+            candidates.append(Path(env_path))
+        candidates.extend(
+            [
+                Path("/app/scripts/oak/model_toolchain.py"),
+                Path(os.environ.get("NILO_INSTALL_DIR", "")) / "scripts/oak/model_toolchain.py",
+            ]
+        )
+        repo = find_repo_root(Path(__file__))
+        if repo is not None:
+            candidates.append(repo / "scripts/oak/model_toolchain.py")
+        candidates.append(Path(__file__).resolve().parents[3] / "scripts/oak/model_toolchain.py")
+
+        tried: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            tried.append(str(candidate))
+            if candidate.is_file():
+                return candidate
+        raise FileNotFoundError(
+            "model_toolchain no encontrado; probado: " + ", ".join(tried)
+        )
+
+    @staticmethod
     def _prepare_yolo(model_dir: Path, blob: bool) -> dict[str, Any]:
         import importlib.util
 
-        repo_root = Path(__file__).resolve().parents[3]
-        toolchain = repo_root / "scripts" / "oak" / "model_toolchain.py"
-        if not toolchain.is_file():
-            raise FileNotFoundError(f"model_toolchain no encontrado: {toolchain}")
+        toolchain = CameraModelRuntime._resolve_model_toolchain()
         spec = importlib.util.spec_from_file_location("oak_model_toolchain", toolchain)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)

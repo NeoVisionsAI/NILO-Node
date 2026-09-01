@@ -15,6 +15,7 @@ services:
       - nilo-data:/data
       - /dev/bus/usb:/dev/bus/usb
       - /var/run/dbus:/var/run/dbus
+      - /sys/class/bluetooth:/sys/class/bluetooth:ro
       - /proc/uptime:/host/proc/uptime:ro
       - /sys/class/thermal:/sys/class/thermal:ro
       - /sys/class/hwmon:/sys/class/hwmon:ro

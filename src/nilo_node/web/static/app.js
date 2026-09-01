@@ -37,6 +37,27 @@ const EXPORT_STREAMS = [
 
 const $ = (id) => document.getElementById(id);
 
+function getCamModelBackend() {
+  return $("cam-model-backend")?.value || "mediapipe";
+}
+
+function setCamModelBackend(value) {
+  const backend = value === "yolo" ? "yolo" : "mediapipe";
+  const hidden = $("cam-model-backend");
+  if (hidden) hidden.value = backend;
+  document.querySelectorAll(".pose-picker-card").forEach((btn) => {
+    const active = btn.dataset.backend === backend;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function initPoseEstimatorPicker() {
+  document.querySelectorAll(".pose-picker-card").forEach((btn) => {
+    btn.addEventListener("click", () => setCamModelBackend(btn.dataset.backend || "mediapipe"));
+  });
+}
+
 let loadingCount = 0;
 let camStatusCache = null;
 let dashboardCache = null;
@@ -49,11 +70,11 @@ let exportEthernetDevices = [];
 
 const MEDIAPIPE_POSE = {
   points: [
-    [100, 42], [96, 36], [94, 36], [92, 36], [104, 36], [106, 36], [108, 36],
-    [88, 44], [112, 44], [94, 52], [106, 52], [78, 88], [122, 88], [68, 128], [132, 128],
-    [58, 168], [142, 168], [52, 178], [148, 178], [54, 162], [146, 162], [56, 154], [144, 154],
-    [86, 198], [114, 198], [82, 258], [118, 258], [80, 318], [120, 318], [78, 332], [122, 332],
-    [82, 340], [118, 340],
+    [140, 52], [128, 38], [122, 38], [116, 40], [152, 38], [158, 38], [164, 40],
+    [104, 48], [176, 48], [124, 68], [156, 68], [96, 118], [184, 118], [68, 178],
+    [212, 178], [52, 238], [228, 238], [46, 258], [234, 258], [54, 232], [226, 232],
+    [58, 208], [222, 208], [112, 292], [168, 292], [104, 378], [176, 378], [98, 468],
+    [182, 468], [92, 498], [188, 498], [104, 520], [176, 520],
   ],
   bones: [
     [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8], [9, 10], [11, 12],
@@ -65,14 +86,33 @@ const MEDIAPIPE_POSE = {
 
 const YOLO_POSE = {
   points: [
-    [100, 42], [92, 38], [108, 38], [84, 44], [116, 44], [78, 88], [122, 88], [68, 128],
-    [132, 128], [58, 168], [142, 168], [86, 198], [114, 198], [82, 258], [118, 258], [80, 318],
-    [120, 318],
+    [140, 52], [124, 40], [156, 40], [108, 48], [172, 48], [96, 118], [184, 118], [68, 178],
+    [212, 178], [52, 238], [228, 238], [112, 292], [168, 292], [104, 378], [176, 378], [98, 468],
+    [182, 468],
   ],
   bones: [
     [0, 1], [0, 2], [1, 3], [2, 4], [5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12],
     [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
   ],
+};
+
+const LANDMARK_PRESETS = {
+  mediapipe: {
+    face: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    arms: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+    trunk: [11, 12, 23, 24],
+    legs: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+    upper_body: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+    lower_body: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+  },
+  yolo: {
+    face: [0, 1, 2, 3, 4],
+    arms: [5, 6, 7, 8, 9, 10],
+    trunk: [5, 6, 11, 12],
+    legs: [11, 12, 13, 14, 15, 16],
+    upper_body: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    lower_body: [11, 12, 13, 14, 15, 16],
+  },
 };
 
 function authHeaders() {
@@ -301,7 +341,7 @@ async function loadSettingsForms() {
   if ($("cam-record-rgb")) $("cam-record-rgb").checked = Boolean(merged.camera.record_rgb);
   if ($("cam-record-tof")) $("cam-record-tof").checked = Boolean(merged.camera.record_tof);
   if ($("cam-model-backend")) {
-    $("cam-model-backend").value = merged.camera.pose_backend || "mediapipe";
+    setCamModelBackend(merged.camera.pose_backend || "mediapipe");
   }
   if ($("monitoring-form")) {
     const mon = normalizeMonitoringSettings({ ...merged.monitoring });
@@ -428,6 +468,22 @@ function setRequiredLandmarks(indices) {
   renderLandmarksSvg();
 }
 
+function toggleLandmarkPreset(presetId) {
+  const backend = activeLandmarkBackend() === "yolo" ? "yolo" : "mediapipe";
+  const indices = LANDMARK_PRESETS[backend]?.[presetId] || [];
+  if (!indices.length) return;
+  const allSelected = indices.every((i) => requiredLandmarksSelection.has(i));
+  if (allSelected) indices.forEach((i) => requiredLandmarksSelection.delete(i));
+  else indices.forEach((i) => requiredLandmarksSelection.add(i));
+  renderLandmarksSvg();
+}
+
+function initLandmarkPresets() {
+  document.querySelectorAll(".landmarks-preset").forEach((btn) => {
+    btn.addEventListener("click", () => toggleLandmarkPreset(btn.dataset.preset));
+  });
+}
+
 function renderLandmarksSvg() {
   const svg = $("mon-landmarks-svg");
   if (!svg) return;
@@ -443,7 +499,7 @@ function renderLandmarksSvg() {
   const dots = map.points
     .map(([x, y], i) => {
       const selected = requiredLandmarksSelection.has(i) ? " selected" : "";
-      return `<circle class="lm-point${selected}" data-idx="${i}" cx="${x}" cy="${y}" r="6" tabindex="0" role="button" aria-label="Punto ${i + 1}" />`;
+      return `<circle class="lm-point${selected}" data-idx="${i}" cx="${x}" cy="${y}" r="9" tabindex="0" role="button" aria-label="Punto ${i + 1}" />`;
     })
     .join("");
   svg.innerHTML = `${bones}${dots}`;
@@ -860,8 +916,8 @@ function renderModelStatus(model) {
   ];
   if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
   el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
-  if ($("cam-model-backend") && model.backend) {
-    $("cam-model-backend").value = model.backend;
+  if (model.backend) {
+    setCamModelBackend(model.backend);
   }
 }
 
@@ -1213,7 +1269,7 @@ $("cam-disconnect").addEventListener("click", async () => {
 });
 
 $("cam-model-load").addEventListener("click", async () => {
-  const backend = $("cam-model-backend")?.value || "mediapipe";
+  const backend = getCamModelBackend();
   setModelLoading(true);
   try {
     const r = await api("/api/v1/camera/model/load", {
@@ -1704,6 +1760,9 @@ $("bt-test-record").addEventListener("click", async () => {
     if (Array.isArray(r.waveform) && r.waveform.length) {
       drawWaveformPeaks($("bt-waveform-canvas"), r.waveform);
     }
+    if (r.mock_audio) {
+      showToast("Grabación simulada — no se detectó fuente PulseAudio del micrófono", "warn");
+    }
     const res = await apiRequest(r.playback_url, { silent: true, jsonBody: false });
     const blob = await res.blob();
     const player = $("bt-test-player");
@@ -1732,4 +1791,6 @@ initSubtabs("camera-subtabs");
 initSubtabs("monitoring-subtabs");
 initSubtabs("mqtt-subtabs");
 initMonitoringExportPanel();
+initPoseEstimatorPicker();
+initLandmarkPresets();
 updatePageHeading("dashboard");

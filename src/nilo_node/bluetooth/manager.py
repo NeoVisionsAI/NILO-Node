@@ -408,22 +408,21 @@ class BluetoothManager:
             raise LookupError("Micrófono no conectado")
 
         cleanup_old_test_recordings(self._test_recording_dir)
-        recording_id, path = await record_test_wav(
+        recording_id, path, mock_audio = await record_test_wav(
             self._test_recording_dir,
             mac,
             duration_sec=duration_sec,
             sample_rate=self._bt.sample_rate,
             channels=self._bt.channels,
+            allow_mock=self._mock,
         )
-        # UX: keep request open while the clip duration elapses (mock or real capture).
-        await asyncio.sleep(max(0.0, duration_sec - 0.5))
         waveform = wav_waveform_peaks(path)
         return {
             "recording_id": recording_id,
             "mac_address": mac,
             "duration_sec": duration_sec,
             "playback_path": str(path),
-            "mock_audio": True,
+            "mock_audio": mock_audio,
             "waveform": waveform,
         }
 

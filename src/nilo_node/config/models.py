@@ -137,7 +137,7 @@ class CardmedConfig(BaseModel):
 class BluetoothConfig(BaseModel):
     enabled: bool = True
     adapter: str = "hci0"
-    mock_when_unavailable: bool = True
+    mock_when_unavailable: bool = False
     auto_power_on: bool = True
     scan_timeout_sec: int = 10
     auto_reconnect_interval_sec: int = 60
