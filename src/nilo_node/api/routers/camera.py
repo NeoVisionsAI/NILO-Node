@@ -138,7 +138,7 @@ def create_camera_router(
         if backend not in ("mediapipe", "yolo"):
             raise HTTPException(status_code=422, detail="backend debe ser mediapipe o yolo")
         try:
-            return await camera.load_pose_model(backend, placement=body.placement)
+            return await camera.load_pose_model(backend, placement="device")
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 

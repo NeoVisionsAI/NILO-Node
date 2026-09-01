@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -67,15 +69,31 @@ class MqttSettingsPatch(BaseModel):
     events_topic_template: str | None = None
 
 
+class MonitoringWindowPatch(BaseModel):
+    days: list[str] = Field(default_factory=list)
+    start_time: str = "09:00"
+    end_time: str = "17:00"
+
+
 class MonitoringSettingsPatch(BaseModel):
     enabled: bool | None = None
-    schedule_mode: Literal["always", "fixed_window"] | None = None
+    schedule_mode: Literal["always", "fixed_window", "weekly_windows"] | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+    windows: list[MonitoringWindowPatch] | None = None
     window_start: str | None = None
     window_end: str | None = None
     daily_start_time: str | None = None
     daily_end_time: str | None = None
+    api_host: str | None = None
     pose_backend: Literal["mediapipe", "yolo", "none"] | None = None
     model_placement: Literal["host", "device"] | None = None
+    require_full_pose: bool | None = None
+    pose_fps: int | None = Field(default=None, ge=1, le=60)
+
+
+class MonitoringHealthRequest(BaseModel):
+    host: str = "nilomed.eu"
 
 
 class SettingsPatchRequest(BaseModel):
@@ -184,5 +202,48 @@ def create_setup_router(
             "settings": settings.model_dump(mode="json"),
             "applied": applied,
         }
+
+    @router.post("/monitoring/health-check", dependencies=[auth])
+    async def monitoring_health_check(body: MonitoringHealthRequest) -> dict[str, Any]:
+        host = body.host.strip().rstrip("/")
+        if not host:
+            raise HTTPException(status_code=422, detail="Host vacío")
+        if "://" in host:
+            parsed = urlparse(host)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            base = None
+
+        attempts: list[str] = []
+        if base:
+            attempts.append(f"{base.rstrip('/')}/api/health")
+        else:
+            attempts.extend(
+                f"https://{host}/api/health",
+                f"http://{host}/api/health",
+            )
+
+        last_error: str | None = None
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0), follow_redirects=True) as client:
+            for url in attempts:
+                try:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        body_json: Any
+                        try:
+                            body_json = response.json()
+                        except ValueError:
+                            body_json = response.text[:500]
+                        return {
+                            "ok": True,
+                            "url": url,
+                            "status_code": response.status_code,
+                            "body": body_json,
+                        }
+                    last_error = f"HTTP {response.status_code} en {url}"
+                except httpx.HTTPError as exc:
+                    last_error = f"{url}: {exc}"
+
+        return {"ok": False, "url": attempts[0] if attempts else None, "error": last_error or "Sin respuesta"}
 
     return router

@@ -16,11 +16,23 @@ const CAM_STATE_LABELS = {
   error: "Error",
 };
 
+const MON_DAYS = [
+  { id: "mon", label: "Lun" },
+  { id: "tue", label: "Mar" },
+  { id: "wed", label: "Mié" },
+  { id: "thu", label: "Jue" },
+  { id: "fri", label: "Vie" },
+  { id: "sat", label: "Sáb" },
+  { id: "sun", label: "Dom" },
+];
+
 const $ = (id) => document.getElementById(id);
 
 let loadingCount = 0;
 let camStatusCache = null;
 let dashboardCache = null;
+let monitoringWindows = [];
+let monitoringEnabled = false;
 
 function authHeaders() {
   const token = localStorage.getItem(TOKEN_KEY);
@@ -231,14 +243,23 @@ async function loadSettingsForms() {
   fillForm($("bt-form"), merged.bluetooth);
   fillForm($("mqtt-form"), merged.mqtt);
   if ($("monitoring-form")) {
-    const mon = { ...merged.monitoring };
-    if (mon.window_start) mon.window_start = isoToDatetimeLocal(mon.window_start);
-    if (mon.window_end) mon.window_end = isoToDatetimeLocal(mon.window_end);
+    const mon = normalizeMonitoringSettings({ ...merged.monitoring });
+    monitoringWindows = mon.windows.map((w) => ({
+      days: [...(w.days || [])],
+      start_time: w.start_time || "09:00",
+      end_time: w.end_time || "17:00",
+    }));
+    if (mon.period_start) mon.period_start = isoToDatetimeLocal(mon.period_start);
+    if (mon.period_end) mon.period_end = isoToDatetimeLocal(mon.period_end);
     fillForm($("monitoring-form"), mon);
-    toggleMonitoringWindowFields(mon.schedule_mode || "always");
+    toggleMonitoringScheduleFields(mon.schedule_mode || "always");
+    renderMonitoringWindows();
+    setMonitoringToggle(mon.enabled);
   }
   if ($("monitoring-model-form")) {
-    fillForm($("monitoring-model-form"), merged.monitoring);
+    const mon = normalizeMonitoringSettings({ ...merged.monitoring });
+    fillForm($("monitoring-model-form"), mon);
+    if ($("mon-api-host")) $("mon-api-host").value = mon.api_host || "nilomed.eu";
   }
   return merged;
 }
@@ -254,23 +275,29 @@ function wifiStateLabel(wifi) {
   return "Parado";
 }
 
+function normalizeMonitoringSettings(mon = {}) {
+  const out = { ...mon };
+  if (out.schedule_mode === "fixed_window") {
+    out.schedule_mode = "weekly_windows";
+    out.windows = [
+      {
+        days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        start_time: out.daily_start_time || "00:00",
+        end_time: out.daily_end_time || "23:59",
+      },
+    ];
+  }
+  if (!Array.isArray(out.windows) || !out.windows.length) {
+    out.windows = [{ days: ["mon", "tue", "wed", "thu", "fri"], start_time: "09:00", end_time: "17:00" }];
+  }
+  if (!out.api_host) out.api_host = "nilomed.eu";
+  if (!out.pose_fps) out.pose_fps = 30;
+  return out;
+}
+
 function updateDashboardHero(d) {
-  const icon = $("dash-cam-icon");
-  const label = $("dash-cam-label");
-  const hint = $("dash-cam-hint");
-  const state = d.camera?.connection_state || "disconnected";
-  if (icon) icon.className = `dash-cam-icon ${state}`;
-  if (label) label.textContent = `Cámara ${CAM_STATE_LABELS[state] || state}`.replace("…", "");
-  if (hint) {
-    if (state === "connected") {
-      hint.textContent = d.camera.connected_device_id
-        ? `Dispositivo ${d.camera.connected_device_id}`
-        : "OAK conectada";
-    } else if (state === "error") {
-      hint.textContent = d.camera.last_error || "Revisa la conexión PoE/USB";
-    } else {
-      hint.textContent = "Conecta la OAK desde la pestaña Cámara";
-    }
+  if ($("dash-node-id")) {
+    $("dash-node-id").textContent = d.node_short_id || d.node_id || "—";
   }
   if ($("dash-temp")) {
     $("dash-temp").textContent = d.system?.temperature_label || "—";
@@ -278,6 +305,88 @@ function updateDashboardHero(d) {
   if ($("dash-uptime")) {
     $("dash-uptime").textContent = d.system?.uptime_human || "—";
   }
+}
+
+function setMonitoringToggle(enabled) {
+  monitoringEnabled = Boolean(enabled);
+  const btn = $("mon-enabled-toggle");
+  const hint = $("mon-toggle-hint");
+  const label = $("mon-toggle-label");
+  if (!btn) return;
+  btn.setAttribute("aria-checked", monitoringEnabled ? "true" : "false");
+  if (label) label.textContent = monitoringEnabled ? "ON" : "OFF";
+  if (hint) {
+    hint.textContent = monitoringEnabled
+      ? "Activa — se registrarán datos según la configuración"
+      : "Desactivada — no se registran datos";
+  }
+}
+
+function renderMonitoringWindows() {
+  const list = $("mon-windows-list");
+  if (!list) return;
+  list.innerHTML = monitoringWindows
+    .map((win, idx) => {
+      const dayChecks = MON_DAYS.map(
+        (d) => `<label class="mon-day"><input type="checkbox" data-win="${idx}" data-day="${d.id}" ${win.days.includes(d.id) ? "checked" : ""} />${d.label}</label>`,
+      ).join("");
+      return `<div class="mon-window-item" data-index="${idx}">
+        <header><span>Ventana ${idx + 1}</span>
+          <button type="button" class="btn ghost mon-remove-window" data-index="${idx}">Eliminar</button>
+        </header>
+        <div class="mon-days">${dayChecks}</div>
+        <div class="mon-window-times">
+          <label>Desde <input type="time" class="mon-win-start" data-index="${idx}" value="${win.start_time || "09:00"}" /></label>
+          <label>Hasta <input type="time" class="mon-win-end" data-index="${idx}" value="${win.end_time || "17:00"}" /></label>
+        </div>
+      </div>`;
+    })
+    .join("");
+
+  list.querySelectorAll(".mon-day input").forEach((input) => {
+    input.addEventListener("change", () => {
+      const i = Number(input.dataset.win);
+      const day = input.dataset.day;
+      const days = new Set(monitoringWindows[i].days);
+      if (input.checked) days.add(day);
+      else days.delete(day);
+      monitoringWindows[i].days = [...days];
+    });
+  });
+  list.querySelectorAll(".mon-win-start").forEach((input) => {
+    input.addEventListener("change", () => {
+      monitoringWindows[Number(input.dataset.index)].start_time = input.value;
+    });
+  });
+  list.querySelectorAll(".mon-win-end").forEach((input) => {
+    input.addEventListener("change", () => {
+      monitoringWindows[Number(input.dataset.index)].end_time = input.value;
+    });
+  });
+  list.querySelectorAll(".mon-remove-window").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.index);
+      monitoringWindows.splice(i, 1);
+      if (!monitoringWindows.length) {
+        monitoringWindows.push({ days: ["mon", "tue", "wed"], start_time: "09:00", end_time: "14:00" });
+      }
+      renderMonitoringWindows();
+    });
+  });
+}
+
+function toggleMonitoringScheduleFields(mode) {
+  const isWeekly = mode === "weekly_windows" || mode === "fixed_window";
+  $("mon-period-fields")?.classList.toggle("hidden", !isWeekly);
+  $("mon-windows-section")?.classList.toggle("hidden", !isWeekly);
+}
+
+function collectMonitoringWindowsFromDom() {
+  return monitoringWindows.map((w) => ({
+    days: [...(w.days || [])],
+    start_time: w.start_time || "09:00",
+    end_time: w.end_time || "17:00",
+  }));
 }
 
 function renderMqttChannel(d) {
@@ -414,14 +523,12 @@ function renderModelStatus(model) {
   const el = $("cam-model-status");
   if (!el || !model) return;
   const rows = [
-    ["Cargado", model.loaded ? "Sí" : "No"],
+    ["En cámara OAK", model.loaded && model.placement === "device" ? "Sí" : model.loaded ? "Parcial" : "No"],
     ["Backend", model.backend || "—"],
-    ["Ubicación", model.placement === "device" ? "Cámara OAK" : "Nodo (PC)"],
     ["Estado", model.message || model.last_error || "—"],
   ];
+  if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
   el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
-  const placement = $("cam-model-placement");
-  if (placement && model.placement) placement.value = model.placement;
 }
 
 function renderCameraStatusSummary(s) {
@@ -516,15 +623,15 @@ async function loadCameraStatus(options = {}) {
 }
 
 function toggleMonitoringWindowFields(mode) {
-  const wrap = $("mon-window-fields");
-  if (wrap) wrap.classList.toggle("hidden", mode !== "fixed_window");
+  toggleMonitoringScheduleFields(mode);
 }
 
 async function loadMonitoringTab(options = {}) {
   const merged = await loadSettingsForms();
-  const mon = merged.monitoring || {};
+  const mon = normalizeMonitoringSettings(merged.monitoring || {});
   $("monitoring-summary").textContent = JSON.stringify(mon, null, 2);
-  toggleMonitoringWindowFields(mon.schedule_mode || "always");
+  toggleMonitoringScheduleFields(mon.schedule_mode || "always");
+  setMonitoringToggle(mon.enabled);
 }
 
 $("login-form").addEventListener("submit", async (e) => {
@@ -662,18 +769,35 @@ $("cam-connect").addEventListener("click", async () => {
 });
 
 async function captureSnapshot(stream, label) {
-  try {
-    const res = await apiRequest(`/api/v1/camera/snapshot?stream=${stream}`, {
-      method: "POST",
-      jsonBody: false,
-      successMessage: `${label} capturado`,
-    });
-    const ok = await showPreviewFromResponse(res, { notify: false, message: `${label} capturado` });
-    if (ok) setCamBanner(`${label} capturado correctamente`, "ok");
-    await loadCameraStatus({ silent: true });
-  } catch (err) {
-    setCamBanner(`Captura ${label}: ${err.message}`, "err");
+  const maxAttempts = 4;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        setCamBanner(`Esperando frames (${attempt}/${maxAttempts})…`, "warn");
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+      const res = await apiRequest(`/api/v1/camera/snapshot?stream=${stream}`, {
+        method: "POST",
+        jsonBody: false,
+        silent: attempt < maxAttempts,
+      });
+      const ok = await showPreviewFromResponse(res, { notify: false, message: `${label} capturado` });
+      if (ok) {
+        setCamBanner(`${label} capturado correctamente`, "ok");
+        await loadCameraStatus({ silent: true });
+        return;
+      }
+    } catch (err) {
+      lastError = err;
+      const retryable = /sin frame|no hay frame|sin respuesta/i.test(String(err.message || ""));
+      if (!retryable || attempt === maxAttempts) break;
+    }
   }
+  const msg = lastError?.message || `Sin ${label} disponible — la cámara puede necesitar unos segundos tras conectar`;
+  setCamBanner(msg, "err");
+  showToast(msg, "error");
+  await loadCameraStatus({ silent: true });
 }
 
 $("cam-snapshot-rgb").addEventListener("click", () => captureSnapshot("rgb", "Frame RGB"));
@@ -694,11 +818,10 @@ $("cam-model-load").addEventListener("click", async () => {
       $("camera-form").elements.pose_backend?.value ||
       dashboardCache?.camera?.pose_backend ||
       "mediapipe";
-    const placement = $("cam-model-placement")?.value || "host";
     const r = await api("/api/v1/camera/model/load", {
       method: "POST",
-      body: JSON.stringify({ backend, placement }),
-      successMessage: "Modelo cargado",
+      body: JSON.stringify({ backend, placement: "device" }),
+      successMessage: "Modelo cargado en la cámara",
     });
     renderModelStatus(r);
     await loadCameraStatus({ silent: true });
@@ -759,23 +882,80 @@ $("cam-model-test").addEventListener("click", async () => {
 });
 
 $("mon-schedule-mode")?.addEventListener("change", (e) => {
-  toggleMonitoringWindowFields(e.target.value);
+  toggleMonitoringScheduleFields(e.target.value);
+});
+
+$("mon-add-window")?.addEventListener("click", () => {
+  monitoringWindows.push({ days: ["mon", "tue", "wed"], start_time: "09:00", end_time: "14:00" });
+  renderMonitoringWindows();
+});
+
+$("mon-enabled-toggle")?.addEventListener("click", async () => {
+  const next = !monitoringEnabled;
+  const msg = next
+    ? "¿Activar la monitorización? Se registrarán datos según la configuración guardada."
+    : "¿Desactivar la monitorización? Dejará de registrar datos.";
+  if (!window.confirm(msg)) return;
+  try {
+    await saveSettings("monitoring", { enabled: next }, next ? "Monitorización activada" : "Monitorización desactivada");
+    setMonitoringToggle(next);
+    showToast(next ? "Monitorización activada" : "Monitorización desactivada", "ok");
+    await loadMonitoringTab({ silent: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+});
+
+$("mon-health-check")?.addEventListener("click", async () => {
+  const host = ($("mon-api-host")?.value || "nilomed.eu").trim();
+  const resultEl = $("mon-health-result");
+  if (resultEl) {
+    resultEl.classList.remove("hidden", "ok", "err");
+    resultEl.textContent = "Comprobando conexión…";
+  }
+  try {
+    const r = await api("/api/v1/setup/monitoring/health-check", {
+      method: "POST",
+      body: JSON.stringify({ host }),
+      silent: true,
+    });
+    if (r.ok) showToast("Conexión correcta con el servidor", "ok");
+    if (resultEl) {
+      resultEl.classList.toggle("ok", Boolean(r.ok));
+      resultEl.classList.toggle("err", !r.ok);
+      resultEl.textContent = r.ok
+        ? `✓ Conexión correcta (${r.url})`
+        : `✕ Error: ${r.error || "No responde"}`;
+    }
+    if (r.ok) await saveSettings("monitoring", { api_host: host }, "Host API guardado");
+  } catch (err) {
+    if (resultEl) {
+      resultEl.classList.add("err");
+      resultEl.classList.remove("ok");
+      resultEl.textContent = `✕ ${err.message}`;
+    }
+  }
 });
 
 $("monitoring-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const patch = formToPatch(e.target);
-  patch.enabled = e.target.elements.enabled.checked;
-  if (patch.window_start) patch.window_start = datetimeLocalToIso(patch.window_start);
-  if (patch.window_end) patch.window_end = datetimeLocalToIso(patch.window_end);
-  await saveSettings("monitoring", patch, "Monitorización");
+  if (patch.period_start) patch.period_start = datetimeLocalToIso(patch.period_start);
+  if (patch.period_end) patch.period_end = datetimeLocalToIso(patch.period_end);
+  patch.windows = collectMonitoringWindowsFromDom();
+  patch.api_host = ($("mon-api-host")?.value || "nilomed.eu").trim();
+  patch.enabled = monitoringEnabled;
+  await saveSettings("monitoring", patch, "Intervalos de monitorización");
   await loadMonitoringTab({ silent: true });
 });
 
 $("monitoring-model-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const patch = formToPatch(e.target);
-  await saveSettings("monitoring", patch, "Modelo de monitorización");
+  patch.require_full_pose = e.target.elements.require_full_pose.checked;
+  patch.api_host = ($("mon-api-host")?.value || "nilomed.eu").trim();
+  patch.enabled = monitoringEnabled;
+  await saveSettings("monitoring", patch, "Modelo y calidad de monitorización");
   await loadMonitoringTab({ silent: true });
 });
 
