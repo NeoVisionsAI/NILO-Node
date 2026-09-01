@@ -14,6 +14,29 @@ from nilo_node.config.models import CameraConfig
 logger = logging.getLogger(__name__)
 
 
+def probe_pose_engine(backend: str) -> tuple[bool, str | None]:
+    """Verify pose engine can initialize (deps, GPU libs, weights)."""
+    if backend == "mediapipe":
+        engine = MediapipePoseEngine()
+    elif backend == "yolo":
+        engine = YoloPoseEngine("yolo-pose")
+    else:
+        return False, f"Backend de pose desconocido: {backend}"
+    try:
+        if engine.available:
+            return True, None
+        if backend == "mediapipe":
+            return (
+                False,
+                "MediaPipe no pudo inicializarse (p. ej. libEGL.so.1 ausente en el contenedor)",
+            )
+        return False, f"Motor {backend} no disponible — revisa dependencias y pesos del modelo"
+    finally:
+        close = getattr(engine, "close", None)
+        if callable(close):
+            close()
+
+
 def build_pose_engine(config: CameraConfig) -> PoseEngine:
     backend = config.pose_backend
     model = config.pose_model

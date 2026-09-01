@@ -286,6 +286,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: color-mix(in srgb, #fbbf24 15%, transparent);
   color: #d97706; border-color: #fbbf24;
 }
+.model-loaded-badge.err {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger); border-color: var(--danger);
+}
 .pose-picker-card.disabled {
   opacity: 0.55; pointer-events: none; cursor: not-allowed;
 }

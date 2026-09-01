@@ -24,10 +24,11 @@ class ModelRuntimeState:
     openvino_xml: str | None = None
     message: str | None = None
     last_error: str | None = None
+    engine_available: bool = False
 
     def inference_ready(self) -> bool:
         """True when host pose-test / CPU inference can run."""
-        return self.loaded
+        return self.loaded and self.engine_available
 
     def device_blob_ready(self) -> bool:
         """True when Myriad blob is ready for on-camera YOLO inference."""
@@ -45,6 +46,10 @@ class ModelRuntimeState:
         if not self.loaded:
             return
         backend = self.backend or "?"
+        if not self.engine_available:
+            hint = self.last_error or "Revisa dependencias del contenedor (OpenGL/EGL, mediapipe)"
+            self.message = f"Modelo {backend} preparado pero motor no disponible — {hint}"
+            return
         if backend == "mediapipe":
             self.message = (
                 "MediaPipe listo — landmarks en CPU del nodo con frames de la OAK"
@@ -74,6 +79,7 @@ class ModelRuntimeState:
             "openvino_xml": self.openvino_xml,
             "message": self.message,
             "last_error": self.last_error,
+            "engine_available": self.engine_available,
             "inference_ready": self.inference_ready(),
             "device_blob_ready": self.device_blob_ready(),
         }
@@ -107,9 +113,13 @@ class CameraModelRuntime:
                 openvino_xml=data.get("openvino_xml"),
                 message=data.get("message"),
                 last_error=data.get("last_error"),
+                engine_available=bool(data.get("engine_available")),
             )
             if self._state.loaded:
-                self._state.refresh_message()
+                if not self._state.engine_available:
+                    self.refresh_engine_probe()
+                else:
+                    self._state.refresh_message()
                 self._persist()
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("Could not load model runtime state: %s", exc)
@@ -144,9 +154,33 @@ class CameraModelRuntime:
         self._state.manifest_path = str(manifest.get("manifest_dir", ""))
         self._state.openvino_xml = manifest.get("openvino_xml")
         self._state.blob_path = manifest.get("blob")
-        self._state.refresh_message()
+        self.refresh_engine_probe()
         self._persist()
         return self._state.to_dict()
+
+    def refresh_engine_probe(self) -> None:
+        if not self._state.loaded or not self._state.backend:
+            self._state.engine_available = False
+            return
+        from nilo_node.camera.pose.factory import probe_pose_engine
+
+        available, err = probe_pose_engine(self._state.backend)
+        self._state.engine_available = available
+        if err:
+            self._state.last_error = err
+        elif available:
+            self._state.last_error = None
+        self._state.refresh_message()
+
+    def set_engine_available(self, available: bool, *, error: str | None = None) -> None:
+        self._state.engine_available = available
+        if error:
+            self._state.last_error = error
+        elif available:
+            self._state.last_error = None
+        if self._state.loaded:
+            self._state.refresh_message()
+        self._persist()
 
     async def unload(self) -> dict[str, Any]:
         self._state = ModelRuntimeState(message="Modelo descargado")

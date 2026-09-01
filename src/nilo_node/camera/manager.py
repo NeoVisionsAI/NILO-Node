@@ -49,8 +49,11 @@ class CameraManager:
         self._model_runtime = CameraModelRuntime(models_root)
 
     def get_model_state(self) -> dict[str, object]:
-        if self._model_runtime.state.loaded:
-            self._model_runtime.state.refresh_message()
+        state = self._model_runtime.state
+        if state.loaded and not state.engine_available:
+            self._model_runtime.refresh_engine_probe()
+        elif state.loaded:
+            state.refresh_message()
         return self._model_runtime.state.to_dict()
 
     async def load_pose_model(
@@ -276,9 +279,14 @@ class CameraManager:
 
         if not engine_available:
             backend = runtime.backend if runtime.loaded else self._camera_cfg.pose_backend
-            result["error"] = (
+            err = (
                 f"Motor de pose ({backend}) no disponible — revisa dependencias en el contenedor"
             )
+            result["error"] = err
+            if runtime.loaded:
+                self._model_runtime.set_engine_available(False, error=err)
+        elif runtime.loaded and not runtime.engine_available:
+            self._model_runtime.set_engine_available(True)
         elif visible == 0:
             result["message"] = (
                 f"{runtime.backend or self._camera_cfg.pose_backend} activo pero no detectó cuerpo en este frame"

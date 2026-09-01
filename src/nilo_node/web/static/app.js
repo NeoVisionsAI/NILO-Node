@@ -441,14 +441,24 @@ function renderModelStatus(model) {
   const deviceReady = isModelDeviceReady(model);
   const loaded = Boolean(model.loaded);
   if (badge) {
-    badge.classList.toggle("hidden", !ready);
-    badge.textContent =
-      model.backend === "yolo" && deviceReady && model.placement === "device"
-        ? "YOLO cargado en OAK"
-        : model.backend === "mediapipe"
-          ? "MediaPipe listo"
-          : "Modelo listo (CPU)";
-    badge.classList.toggle("warn", loaded && ready && !deviceReady && model.placement === "device");
+    badge.classList.remove("warn", "err");
+    if (ready) {
+      badge.classList.remove("hidden");
+      badge.textContent =
+        model.backend === "yolo" && deviceReady && model.placement === "device"
+          ? "YOLO cargado en OAK"
+          : model.backend === "mediapipe"
+            ? "MediaPipe listo"
+            : "Modelo listo (CPU)";
+      badge.classList.toggle("warn", loaded && !deviceReady && model.placement === "device");
+    } else if (loaded) {
+      badge.classList.remove("hidden");
+      badge.classList.add("err");
+      badge.textContent =
+        model.backend === "mediapipe" ? "MediaPipe no disponible" : "Motor no disponible";
+    } else {
+      badge.classList.add("hidden");
+    }
   }
   if (!el) return;
   const statusText =
