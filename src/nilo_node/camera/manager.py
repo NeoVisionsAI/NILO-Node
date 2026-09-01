@@ -219,7 +219,6 @@ class CameraManager:
         import cv2
         import numpy as np
 
-        from nilo_node.camera.pose.factory import build_pose_engine
         from nilo_node.camera.pose.mediapipe_engine import draw_pose_landmarks
 
         jpeg = await self.get_preview_jpeg(wait_for_frame=True, stream="rgb")
@@ -241,7 +240,7 @@ class CameraManager:
                 "error": "No se pudo decodificar el frame JPEG",
             }
 
-        engine = build_pose_engine(self._camera_cfg)
+        engine = self._build_pose_engine_for_test()
         landmarks = engine.process(frame, time.time())
         visible = int(np.sum(landmarks[:, 3] > 0.5))
         engine_available = getattr(engine, "available", engine.engine_id != "stub")
@@ -271,6 +270,15 @@ class CameraManager:
             result["message"] = "MediaPipe activo pero no detectó cuerpo en este frame"
 
         return result
+
+    def _build_pose_engine_for_test(self):
+        from nilo_node.camera.pose.factory import build_pose_engine
+
+        state = self._model_runtime.state
+        cfg = self._camera_cfg.model_copy(deep=True)
+        if state.loaded and state.backend in ("mediapipe", "yolo"):
+            cfg.pose_backend = state.backend  # type: ignore[assignment]
+        return build_pose_engine(cfg)
 
     def set_campaign(self, campaign: Campaign | None) -> None:
         self._active_campaign = campaign

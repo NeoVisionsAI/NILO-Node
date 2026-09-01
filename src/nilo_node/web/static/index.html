@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=10" />
+  <link rel="stylesheet" href="style.css?v=11" />
 </head>
 <body>
   <div id="api-loading-bar" class="api-loading-bar" aria-hidden="true"></div>
@@ -186,12 +186,11 @@
             <div class="progress-label">Preparando y cargando modelo…</div>
             <div class="progress-bar indeterminate"><span></span></div>
           </div>
-          <div id="cam-model-loaded-badge" class="model-loaded-badge hidden">Modelo cargado en OAK</div>
+          <div id="cam-model-loaded-badge" class="model-loaded-badge hidden">Modelo listo</div>
           <div id="cam-model-status" class="kv"></div>
           <div class="row">
-            <button id="cam-model-load" class="btn primary">Cargar en cámara</button>
+            <button id="cam-model-action" class="btn primary">Cargar en cámara</button>
             <button id="cam-model-test" class="btn secondary">Comprobar</button>
-            <button id="cam-model-unload" class="btn ghost">Limpiar modelo</button>
           </div>
           <h4 class="cam-subtitle">Resultado de comprobación</h4>
           <div class="preview-wrap model-test-preview">
@@ -610,6 +609,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

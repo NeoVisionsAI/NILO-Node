@@ -8,6 +8,7 @@ import numpy as np
 class StubPoseEngine:
     engine_id = "stub"
     landmark_count = 33
+    available = False
 
     def __init__(self, model_name: str = "stub") -> None:
         self.model_name = model_name

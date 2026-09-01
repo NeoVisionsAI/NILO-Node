@@ -25,6 +25,18 @@ class ModelRuntimeState:
     message: str | None = None
     last_error: str | None = None
 
+    def inference_ready(self) -> bool:
+        """True when pose-test / monitoring can run with current artifacts."""
+        if not self.loaded:
+            return False
+        if self.placement == "host":
+            return True
+        if self.backend == "mediapipe":
+            return True
+        if self.backend == "yolo":
+            return bool(self.blob_path)
+        return False
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "loaded": self.loaded,
@@ -35,6 +47,7 @@ class ModelRuntimeState:
             "openvino_xml": self.openvino_xml,
             "message": self.message,
             "last_error": self.last_error,
+            "inference_ready": self.inference_ready(),
         }
 
 
@@ -100,13 +113,20 @@ class CameraModelRuntime:
         self._state.manifest_path = str(manifest.get("manifest_dir", ""))
         self._state.openvino_xml = manifest.get("openvino_xml")
         self._state.blob_path = manifest.get("blob")
-        if placement == "device" and not self._state.blob_path:
+        if backend == "mediapipe":
+            if placement == "device":
+                self._state.message = (
+                    "MediaPipe listo — landmarks en CPU del nodo con frames de la OAK"
+                )
+            else:
+                self._state.message = "MediaPipe listo en el nodo (CPU)"
+        elif placement == "device" and not self._state.blob_path:
             self._state.message = (
-                "Modelo preparado en host; blob Myriad no generado — "
-                "usa placement=host o instala blobconverter"
+                "YOLO preparado en host; blob Myriad no generado — "
+                "instala blobconverter y vuelve a cargar, o usa MediaPipe"
             )
         elif placement == "device":
-            self._state.message = "Modelo cargado para inferencia en cámara OAK (blob listo)"
+            self._state.message = "YOLO cargado para inferencia en cámara OAK (blob listo)"
         else:
             self._state.message = f"Modelo {backend} listo en el nodo (CPU/OpenVINO host)"
         self._persist()

@@ -395,8 +395,71 @@ function initSubtabs(rootId) {
 
 function setModelLoading(active) {
   $("cam-model-progress-wrap")?.classList.toggle("hidden", !active);
-  if ($("cam-model-load")) $("cam-model-load").disabled = active;
+  const btn = $("cam-model-action");
+  if (btn && !btn.dataset.loadedMode) btn.disabled = active;
   if ($("cam-model-test")) $("cam-model-test").disabled = active;
+}
+
+function isModelInferenceReady(model) {
+  if (!model?.loaded) return false;
+  if (typeof model.inference_ready === "boolean") return model.inference_ready;
+  if (model.placement === "host") return true;
+  if (model.backend === "mediapipe") return true;
+  return Boolean(model.blob_path);
+}
+
+function updateCamModelActionButton(model) {
+  const btn = $("cam-model-action");
+  if (!btn) return;
+  const loaded = Boolean(model?.loaded);
+  const ready = isModelInferenceReady(model);
+  btn.dataset.loadedMode = loaded ? "1" : "";
+  if (loaded) {
+    btn.textContent = "Limpiar modelo";
+    btn.className = ready ? "btn secondary" : "btn secondary";
+  } else {
+    btn.textContent = "Cargar en cámara";
+    btn.className = "btn primary";
+  }
+  btn.disabled = false;
+  document.querySelectorAll(".pose-picker-card").forEach((card) => {
+    card.disabled = loaded;
+    card.classList.toggle("disabled", loaded);
+  });
+}
+
+function renderModelStatus(model) {
+  const el = $("cam-model-status");
+  const badge = $("cam-model-loaded-badge");
+  if (!model) return;
+  const ready = isModelInferenceReady(model);
+  const loaded = Boolean(model.loaded);
+  if (badge) {
+    badge.classList.toggle("hidden", !ready);
+    badge.textContent =
+      model.backend === "yolo" && model.blob_path
+        ? "YOLO cargado en OAK"
+        : model.backend === "mediapipe"
+          ? "MediaPipe listo"
+          : "Modelo listo";
+    badge.classList.toggle("warn", loaded && !ready);
+  }
+  if (!el) return;
+  const statusText =
+    model.message ||
+    model.last_error ||
+    (ready ? "Listo para comprobar inferencia" : loaded ? "Preparado con advertencias" : "Sin cargar");
+  const rows = [
+    ["Pose Estimator", model.backend || "—"],
+    ["Estado", statusText],
+  ];
+  if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
+  else if (loaded && model.placement === "device" && model.backend === "yolo") {
+    rows.push(["Blob Myriad", "No generado"]);
+  }
+  el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
+  if (model.backend) setCamModelBackend(model.backend);
+  updateCamModelActionButton(model);
 }
 
 async function saveCameraRecordingToggles() {
@@ -522,7 +585,11 @@ async function updateMonitoringModelFields() {
   try {
     const s = camStatusCache || (await api("/api/v1/camera/status", { silent: true }));
     camStatusCache = s;
-    loaded = Boolean(s.model?.loaded && s.model?.placement === "device");
+    loaded = Boolean(s.model?.loaded && s.model?.inference_ready !== false && (
+      s.model?.inference_ready === true ||
+      s.model?.backend === "mediapipe" ||
+      Boolean(s.model?.blob_path)
+    ));
     backend = s.model?.backend;
     monitoringCameraModelLoaded = loaded;
   } catch {
@@ -903,24 +970,6 @@ function updateCamConnectButton(s) {
   btn.disabled = false;
 }
 
-function renderModelStatus(model) {
-  const el = $("cam-model-status");
-  const badge = $("cam-model-loaded-badge");
-  if (!model) return;
-  const loadedOnDevice = Boolean(model.loaded && model.placement === "device");
-  if (badge) badge.classList.toggle("hidden", !loadedOnDevice);
-  if (!el) return;
-  const rows = [
-    ["Pose Estimator", model.backend || "—"],
-    ["Estado", model.message || model.last_error || (loadedOnDevice ? "Cargado en OAK" : "Sin cargar")],
-  ];
-  if (model.blob_path) rows.push(["Blob Myriad", "Listo"]);
-  el.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><span>${v}</span></div>`).join("");
-  if (model.backend) {
-    setCamModelBackend(model.backend);
-  }
-}
-
 function renderCameraStatusSummary(s) {
   camStatusCache = s;
   const state = CAM_STATE_LABELS[s.connection_state] || s.connection_state;
@@ -1268,39 +1317,44 @@ $("cam-disconnect").addEventListener("click", async () => {
   await loadCameraStatus({ silent: true });
 });
 
-$("cam-model-load").addEventListener("click", async () => {
+$("cam-model-action").addEventListener("click", async () => {
+  const btn = $("cam-model-action");
+  const loaded = Boolean(btn?.dataset.loadedMode);
+  if (loaded) {
+    try {
+      const r = await api("/api/v1/camera/model/unload", {
+        method: "POST",
+        body: "{}",
+        successMessage: "Modelo descargado",
+      });
+      renderModelStatus(r);
+      $("cam-model-test-json")?.classList.add("hidden");
+      $("cam-model-test-preview")?.classList.add("hidden");
+      $("cam-model-test-placeholder")?.classList.remove("hidden");
+      await loadCameraStatus({ silent: true });
+    } catch (err) {
+      setCamBanner(`Limpiar modelo: ${err.message}`, "err");
+    }
+    return;
+  }
   const backend = getCamModelBackend();
   setModelLoading(true);
   try {
     const r = await api("/api/v1/camera/model/load", {
       method: "POST",
       body: JSON.stringify({ backend, placement: "device" }),
-      successMessage: "Modelo cargado en la cámara",
+      successMessage: isModelInferenceReady(r) ? "Modelo cargado" : "Modelo preparado (revisa el estado)",
     });
     renderModelStatus(r);
+    if (!isModelInferenceReady(r)) {
+      showToast(r.message || "Modelo preparado pero incompleto para OAK", "warn");
+    }
     await loadCameraStatus({ silent: true });
     await saveSettings("camera", { pose_backend: backend }, "Backend de pose");
   } catch (err) {
     setCamBanner(`Cargar modelo: ${err.message}`, "err");
   } finally {
     setModelLoading(false);
-  }
-});
-
-$("cam-model-unload").addEventListener("click", async () => {
-  try {
-    const r = await api("/api/v1/camera/model/unload", {
-      method: "POST",
-      body: "{}",
-      successMessage: "Modelo descargado",
-    });
-    renderModelStatus(r);
-    $("cam-model-test-json")?.classList.add("hidden");
-    $("cam-model-test-preview")?.classList.add("hidden");
-    $("cam-model-test-placeholder")?.classList.remove("hidden");
-    await loadCameraStatus({ silent: true });
-  } catch (err) {
-    setCamBanner(`Quitar modelo: ${err.message}`, "err");
   }
 });
 
@@ -1324,7 +1378,9 @@ $("cam-model-test").addEventListener("click", async () => {
       jsonEl.classList.remove("hidden");
     }
 
-    if (r.engine_available) {
+    if (!r.engine_available) {
+      showToast(r.error || "Motor de pose no disponible en el contenedor", "error");
+    } else {
       const n = r.landmarks_detected ?? 0;
       const backend = r.model?.backend || r.engine_id || "modelo";
       const msg = r.pose_detected

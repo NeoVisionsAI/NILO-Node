@@ -282,6 +282,13 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
   background: color-mix(in srgb, var(--success) 15%, transparent);
   color: var(--success); border: 1px solid var(--success);
 }
+.model-loaded-badge.warn {
+  background: color-mix(in srgb, #fbbf24 15%, transparent);
+  color: #d97706; border-color: #fbbf24;
+}
+.pose-picker-card.disabled {
+  opacity: 0.55; pointer-events: none; cursor: not-allowed;
+}
 .model-test-preview { margin-top: 0.75rem; }
 .cam-record-toggles {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-top: 1rem;

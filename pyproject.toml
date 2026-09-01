@@ -38,6 +38,7 @@ hardware = [
     "opencv-python>=4.8.0",
     "pillow>=10.0.0",
     "ultralytics>=8.3.0",
+    "blobconverter>=1.4.0",
 ]
 
 [project.scripts]
